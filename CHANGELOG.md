@@ -14,3 +14,4 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Structural validation and an `inspect` example.
 - Configurable parsing safety limits.
 - External-body classification and block-data indexing.
+- Optional bundled-SQLite access, schema discovery, and external-index validation.

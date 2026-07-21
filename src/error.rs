@@ -87,6 +87,29 @@ pub enum Error {
         /// Human-readable reason for the rejection.
         reason: &'static str,
     },
+    /// The embedded SQLite database is structurally inconsistent.
+    #[cfg(feature = "sqlite")]
+    InvalidDatabase {
+        /// Human-readable details.
+        reason: String,
+    },
+    /// A requested SQLite table does not exist in this file revision.
+    #[cfg(feature = "sqlite")]
+    MissingTable {
+        /// Requested table name.
+        table: String,
+    },
+    /// A requested SQLite column does not exist in this file revision.
+    #[cfg(feature = "sqlite")]
+    MissingColumn {
+        /// Table containing the requested column.
+        table: String,
+        /// Requested column name.
+        column: String,
+    },
+    /// An operation on the embedded SQLite database failed.
+    #[cfg(feature = "sqlite")]
+    Sqlite(rusqlite::Error),
 }
 
 impl fmt::Display for Error {
@@ -143,6 +166,20 @@ impl fmt::Display for Error {
             Self::InvalidChunkSequence { reason } => {
                 write!(formatter, "invalid top-level chunk sequence: {reason}")
             }
+            #[cfg(feature = "sqlite")]
+            Self::InvalidDatabase { reason } => {
+                write!(formatter, "invalid embedded SQLite database: {reason}")
+            }
+            #[cfg(feature = "sqlite")]
+            Self::MissingTable { table } => {
+                write!(formatter, "SQLite table {table:?} is not present")
+            }
+            #[cfg(feature = "sqlite")]
+            Self::MissingColumn { table, column } => {
+                write!(formatter, "SQLite column {table}.{column} is not present")
+            }
+            #[cfg(feature = "sqlite")]
+            Self::Sqlite(error) => write!(formatter, "SQLite error: {error}"),
         }
     }
 }
@@ -151,6 +188,8 @@ impl error::Error for Error {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
+            #[cfg(feature = "sqlite")]
+            Self::Sqlite(error) => Some(error),
             _ => None,
         }
     }
@@ -159,6 +198,13 @@ impl error::Error for Error {
 impl From<io::Error> for Error {
     fn from(error: io::Error) -> Self {
         Self::Io(error)
+    }
+}
+
+#[cfg(feature = "sqlite")]
+impl From<rusqlite::Error> for Error {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Sqlite(error)
     }
 }
 

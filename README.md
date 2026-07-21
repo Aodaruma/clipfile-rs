@@ -16,11 +16,12 @@ Implemented:
 - bounded or streaming access to chunk payloads; and
 - parsing of file and external-object headers;
 - classification of block data, length-prefixed zlib streams, and audio; and
-- block indexing without loading compressed tile payloads.
+- block indexing without loading compressed tile payloads; and
+- optional, read-only SQLite access with runtime schema discovery.
 
 Not implemented yet:
 
-- SQLite-backed document and layer models;
+- high-level SQLite-backed document and layer models;
 - raster tile decoding as a public API;
 - vector, text, animation, or `.cmc` support; and
 - writing or modifying files.
@@ -51,7 +52,13 @@ To inspect a local file without loading its large payloads into memory:
 ```console
 cargo run --example inspect -- path/to/drawing.clip
 cargo run --example inspect -- path/to/drawing.clip --deep
+cargo run --features sqlite --example inspect -- path/to/drawing.clip --database
 ```
+
+The optional `sqlite` feature uses a bundled SQLite build for reproducible
+linking across supported platforms. It provides `ClipFile::open_database`,
+runtime table/column discovery, integrity checking, and cross-validation of
+the `ExternalChunk` index.
 
 The API is intentionally read-only at this stage. Treat all input as
 untrusted; the parser validates structural bounds, but coverage of the full

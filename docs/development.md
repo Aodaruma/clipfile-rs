@@ -7,7 +7,8 @@
 - edition: Rust 2024
 - MSRV: Rust 1.85
 - license: MIT
-- 通常依存: なし
+- 既定featureの依存: なし
+- `sqlite` feature: `rusqlite` と同梱SQLite（システムのSQLite開発環境は不要）
 
 CIはLinux、Windows、macOSのstableとLinuxのMSRVでテストし、fmt、Clippy、rustdoc、`cargo package` も検証する。DependabotはCargo依存とGitHub Actionsを週次確認する。
 
@@ -25,6 +26,7 @@ cargo package --locked
 
 ```console
 cargo run --example inspect -- tester/data/example.clip
+cargo run --features sqlite --example inspect -- tester/data/example.clip --database
 ```
 
 `tester/` はGit管理対象外である。サンプル、抽出DB、参考リポジトリ、解析結果を置けるが、「ignoreされている」ことは再配布許可を意味しない。機密作品や第三者作品をissueへ添付しない。

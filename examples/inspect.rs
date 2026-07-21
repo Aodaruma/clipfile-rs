@@ -3,13 +3,15 @@ use std::{env, fs::File, process::ExitCode};
 use clipfile::{ChunkKind, ClipFile, ExternalBody};
 
 fn main() -> ExitCode {
-    let Some(path) = env::args_os().nth(1) else {
-        eprintln!("usage: cargo run --example inspect -- <file.clip> [--deep]");
+    let arguments = env::args_os().skip(1).collect::<Vec<_>>();
+    let Some(path) = arguments.first() else {
+        eprintln!("usage: cargo run --example inspect -- <file.clip> [--deep] [--database]");
         return ExitCode::from(2);
     };
-    let deep = env::args_os().nth(2).is_some_and(|value| value == "--deep");
+    let deep = arguments.iter().skip(1).any(|value| value == "--deep");
+    let database = arguments.iter().skip(1).any(|value| value == "--database");
 
-    match inspect(path, deep) {
+    match inspect(path, deep, database) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error}");
@@ -18,7 +20,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn inspect(path: impl AsRef<std::path::Path>, deep: bool) -> clipfile::Result<()> {
+fn inspect(path: impl AsRef<std::path::Path>, deep: bool, database: bool) -> clipfile::Result<()> {
     let mut clip = ClipFile::open(File::open(path)?)?;
     let root = clip.root_header();
     let header = clip.file_header();
@@ -32,6 +34,36 @@ fn inspect(path: impl AsRef<std::path::Path>, deep: bool) -> clipfile::Result<()
     println!("SQLite payload size: {}", summary.database_payload_size());
     if deep {
         inspect_external_objects(&mut clip)?;
+    }
+    inspect_database_if_requested(&mut clip, database)?;
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+fn inspect_database_if_requested<R: std::io::Read + std::io::Seek>(
+    clip: &mut ClipFile<R>,
+    requested: bool,
+) -> clipfile::Result<()> {
+    if requested {
+        let database = clip.open_database()?;
+        database.quick_check()?;
+        clip.validate_external_index(&database)?;
+        println!("SQLite tables: {}", database.schema().tables().len());
+        println!(
+            "SQLite external rows: {}",
+            database.row_count("ExternalChunk")?
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "sqlite"))]
+fn inspect_database_if_requested<R: std::io::Read + std::io::Seek>(
+    _clip: &mut ClipFile<R>,
+    requested: bool,
+) -> clipfile::Result<()> {
+    if requested {
+        eprintln!("--database requires: cargo run --features sqlite --example inspect -- ...");
     }
     Ok(())
 }

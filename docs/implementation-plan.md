@@ -37,18 +37,18 @@
 
 `ExternalObject`, `ExternalBody`, `BlockData`, `Block`, `BlockPayload` として実装した。チェックサムは `u32` の不透明値として公開し、未知アルゴリズムを「検証済み」と表現しない。
 
-### 3. `database` — optional feature
+### 3. `database` — 実装済み（optional feature）
 
-SQLite連携は `sqlite` featureとして切り離す案を推奨する。
+SQLite連携は `sqlite` featureとして切り離して実装した。
 
-- `CHNKSQLi` を一時ファイルまたは上限付きメモリDBへ展開
-- `PRAGMA table_info` で実在列を確認
+- `CHNKSQLi` を上限付きでSQLite管理メモリへ直接読み込み
+- `pragma_table_xinfo` で実在列を確認
 - 列名を明示したクエリを組み立てる
 - 必須列欠落はエラー、任意列欠落は `None` または既定値
 - `ExternalChunk` のID・位置を実ファイルと相互検証
 - 未知テーブル・未知列の列挙APIを用意
 
-SQLiteの詳細型を低レベル公開APIへ漏らさず、`DatabaseView` のような内部アダプターを置くと、将来バックエンドを変更しやすい。
+`Database` は安全なスキーマ・索引APIに加え、高度な用途向けに読み取り専用の `rusqlite::Connection` も公開する。依存関係は既定featureへ含めない。
 
 ### 4. `raster` — optional feature
 

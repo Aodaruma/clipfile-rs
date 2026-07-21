@@ -7,6 +7,8 @@
 //! of the format become sufficiently well understood.
 
 mod container;
+#[cfg(feature = "sqlite")]
+mod database;
 mod error;
 mod external;
 mod limits;
@@ -14,6 +16,11 @@ mod limits;
 pub use container::{
     CHUNK_HEADER_SIZE, ChunkHeader, ChunkIter, ChunkKind, ClipFile, ExternalChunkHeader,
     FileHeader, ROOT_HEADER_SIZE, RootHeader, ValidationSummary,
+};
+#[cfg(feature = "sqlite")]
+pub use database::{
+    ColumnSchema, Database, DatabaseSchema, ExternalChunkRecord, ExternalReferenceColumn,
+    TableSchema,
 };
 pub use error::{Error, Result};
 pub use external::{
