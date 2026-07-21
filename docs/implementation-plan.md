@@ -50,9 +50,9 @@ SQLite連携は `sqlite` featureとして切り離して実装した。
 
 `Database` は安全なスキーマ・索引APIに加え、高度な用途向けに読み取り専用の `rusqlite::Connection` も公開する。依存関係は既定featureへ含めない。
 
-### 4. `raster` — optional feature
+### 4. `raster` — 実装済み（optional feature）
 
-最初の高レベル機能は、用途と検証方法が明確なプレビュー・ラスターレイヤー読み取りがよい。
+用途と検証方法が明確なラスターレイヤー読み取りを `raster` featureとして実装した。
 
 1. `Layer` → `Mipmap` → `MipmapInfo` → `Offscreen` を解決
 2. `Offscreen.Attribute` から画像寸法、ブロックグリッド、チャンネル配置を解析
@@ -60,7 +60,9 @@ SQLite連携は `sqlite` featureとして切り離して実装した。
 4. データありタイルだけをzlib展開
 5. α + B/G/R/X をRGBAへ変換し、256×256グリッドへ配置
 
-公開型は `DecodedTile` と `LayerBitmap` を分ける。巨大画像を一括確保したくない利用者がタイル単位で処理できるようにする。`image` crateとの変換はさらに `image` featureへ分離できる。
+公開型は `DecodedTile` と `RasterImage` を分け、巨大画像を一括確保したくない利用者はタイル単位で処理できる。画像全体の確保量と1タイルの展開量は別々の `Limits` で制限する。現在は観測・検証できた8-bitの `(alpha, BGRA)` と1チャンネル配置を対象とし、1-bitや未知配置は明示的な未対応エラーにする。`image` crateとの変換は将来別featureへ分離できる。
+
+ローカルコーパスでは5ファイル、19,437件の `Offscreen.Attribute` を全件解析し、各ファイルから少なくとも1つの実在ラスターレイヤーをRGBAへ展開した。DB参照なし・外部チャンク欠落・実データありは `RasterDataState` で区別する。
 
 ### 5. `model`
 

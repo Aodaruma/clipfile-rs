@@ -9,6 +9,7 @@
 - license: MIT
 - 既定featureの依存: なし
 - `sqlite` feature: `rusqlite` と同梱SQLite（システムのSQLite開発環境は不要）
+- `raster` feature: `sqlite` + pure-Rust zlib展開
 
 CIはLinux、Windows、macOSのstableとLinuxのMSRVでテストし、fmt、Clippy、rustdoc、`cargo package` も検証する。DependabotはCargo依存とGitHub Actionsを週次確認する。
 
@@ -27,6 +28,7 @@ cargo package --locked
 ```console
 cargo run --example inspect -- tester/data/example.clip
 cargo run --features sqlite --example inspect -- tester/data/example.clip --database
+cargo run --features raster --example inspect -- tester/data/example.clip --raster
 ```
 
 `tester/` はGit管理対象外である。サンプル、抽出DB、参考リポジトリ、解析結果を置けるが、「ignoreされている」ことは再配布許可を意味しない。機密作品や第三者作品をissueへ添付しない。

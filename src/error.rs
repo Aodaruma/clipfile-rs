@@ -110,6 +110,18 @@ pub enum Error {
     /// An operation on the embedded SQLite database failed.
     #[cfg(feature = "sqlite")]
     Sqlite(rusqlite::Error),
+    /// Raster metadata or decoded pixels are structurally inconsistent.
+    #[cfg(feature = "raster")]
+    InvalidRaster {
+        /// Human-readable details.
+        reason: String,
+    },
+    /// The raster uses a pixel layout that is recognized but not supported.
+    #[cfg(feature = "raster")]
+    UnsupportedRaster {
+        /// Human-readable details.
+        reason: String,
+    },
 }
 
 impl fmt::Display for Error {
@@ -180,6 +192,12 @@ impl fmt::Display for Error {
             }
             #[cfg(feature = "sqlite")]
             Self::Sqlite(error) => write!(formatter, "SQLite error: {error}"),
+            #[cfg(feature = "raster")]
+            Self::InvalidRaster { reason } => write!(formatter, "invalid raster data: {reason}"),
+            #[cfg(feature = "raster")]
+            Self::UnsupportedRaster { reason } => {
+                write!(formatter, "unsupported raster layout: {reason}")
+            }
         }
     }
 }

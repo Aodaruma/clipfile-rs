@@ -282,6 +282,11 @@ impl<R: Read + Seek> ClipFile<R> {
         }
     }
 
+    #[cfg(feature = "raster")]
+    pub(crate) fn chunk_at_offset(&mut self, offset: u64) -> Result<ChunkHeader> {
+        read_chunk_header(&mut self.reader, offset, self.file_size)
+    }
+
     /// Parses the internal prefix of an external chunk.
     pub fn external_chunk_header(&mut self, chunk: &ChunkHeader) -> Result<ExternalChunkHeader> {
         if chunk.kind() != ChunkKind::External {

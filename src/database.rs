@@ -234,6 +234,36 @@ impl Database {
         .collect()
     }
 
+    /// Looks up one external-object index row by its opaque identifier.
+    pub fn external_chunk(&self, identifier: &[u8]) -> Result<Option<ExternalChunkRecord>> {
+        self.require_column("ExternalChunk", "ExternalID")?;
+        self.require_column("ExternalChunk", "Offset")?;
+        let mut statement = self.connection.prepare(
+            "SELECT ExternalID, Offset FROM ExternalChunk \
+             WHERE CAST(ExternalID AS BLOB) = ?1 LIMIT 1",
+        )?;
+        let mut rows = statement.query(params![identifier])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let identifier = match row.get_ref(0)? {
+            ValueRef::Blob(bytes) | ValueRef::Text(bytes) => Box::from(bytes),
+            value => {
+                return Err(rusqlite::Error::InvalidColumnType(
+                    0,
+                    "ExternalID".to_owned(),
+                    value.data_type(),
+                )
+                .into());
+            }
+        };
+        let raw_offset: i64 = row.get(1)?;
+        let offset = u64::try_from(raw_offset).map_err(|_| Error::InvalidDatabase {
+            reason: "ExternalChunk contains a negative offset".to_owned(),
+        })?;
+        Ok(Some(ExternalChunkRecord { identifier, offset }))
+    }
+
     /// Reads declarations of columns that may reference external objects.
     pub fn external_reference_columns(&self) -> Result<Vec<ExternalReferenceColumn>> {
         self.require_column("ExternalTableAndColumnName", "TableName")?;

@@ -13,16 +13,16 @@ Implemented:
 - streaming parsing of the `CSFCHUNK` envelope;
 - top-level `CHNKHead`, `CHNKExta`, `CHNKSQLi`, and `CHNKFoot` discovery;
 - strict size, offset, and chunk-order validation;
-- bounded or streaming access to chunk payloads; and
+- bounded or streaming access to chunk payloads;
 - parsing of file and external-object headers;
-- classification of block data, length-prefixed zlib streams, and audio; and
-- block indexing without loading compressed tile payloads; and
-- optional, read-only SQLite access with runtime schema discovery.
+- classification of block data, length-prefixed zlib streams, and audio;
+- block indexing without loading compressed tile payloads;
+- optional, read-only SQLite access with runtime schema discovery; and
+- optional `Offscreen.Attribute`, zlib tile, and RGBA/grayscale raster decoding.
 
 Not implemented yet:
 
-- high-level SQLite-backed document and layer models;
-- raster tile decoding as a public API;
+- higher-level canvas/layer models;
 - vector, text, animation, or `.cmc` support; and
 - writing or modifying files.
 
@@ -53,12 +53,18 @@ To inspect a local file without loading its large payloads into memory:
 cargo run --example inspect -- path/to/drawing.clip
 cargo run --example inspect -- path/to/drawing.clip --deep
 cargo run --features sqlite --example inspect -- path/to/drawing.clip --database
+cargo run --features raster --example inspect -- path/to/drawing.clip --raster
 ```
 
 The optional `sqlite` feature uses a bundled SQLite build for reproducible
 linking across supported platforms. It provides `ClipFile::open_database`,
 runtime table/column discovery, integrity checking, and cross-validation of
 the `ExternalChunk` index.
+
+The `raster` feature builds on `sqlite`. It resolves a layer or mipmap to its
+base offscreen data, supports bounded tile-by-tile decompression, and can
+assemble currently understood 8-bit `(alpha, BGRA)` or grayscale layouts.
+Unknown and bit-packed layouts return an explicit unsupported-format error.
 
 The API is intentionally read-only at this stage. Treat all input as
 untrusted; the parser validates structural bounds, but coverage of the full

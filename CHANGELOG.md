@@ -15,3 +15,4 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Configurable parsing safety limits.
 - External-body classification and block-data indexing.
 - Optional bundled-SQLite access, schema discovery, and external-index validation.
+- Optional offscreen metadata parsing, bounded zlib tile decoding, and raster assembly.

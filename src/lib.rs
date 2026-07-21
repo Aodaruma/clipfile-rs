@@ -12,6 +12,8 @@ mod database;
 mod error;
 mod external;
 mod limits;
+#[cfg(feature = "raster")]
+mod raster;
 
 pub use container::{
     CHUNK_HEADER_SIZE, ChunkHeader, ChunkIter, ChunkKind, ClipFile, ExternalChunkHeader,
@@ -28,3 +30,8 @@ pub use external::{
     LengthPrefixedZlib, MediaKind,
 };
 pub use limits::Limits;
+#[cfg(feature = "raster")]
+pub use raster::{
+    DecodedTile, OffscreenAttributes, PixelFormat, PixelPacking, RasterDataState, RasterImage,
+    RasterSource,
+};
