@@ -25,7 +25,7 @@
 
 この層は標準ライブラリだけで動作させる。現在の `ClipFile<R: Read + Seek>` がこの役割を担う。
 
-### 2. `external` / `block` — 次の実装候補
+### 2. `external` / `block` — 実装済み
 
 責務:
 
@@ -35,7 +35,7 @@
 - 明示的な上限付きzlib展開
 - LE長付きzlib、BE長付きzlib、生メディアの判別
 
-チェックサムは当面 `u32` の不透明値として公開する。未知アルゴリズムを「検証済み」と表現しない。
+`ExternalObject`, `ExternalBody`, `BlockData`, `Block`, `BlockPayload` として実装した。チェックサムは `u32` の不透明値として公開し、未知アルゴリズムを「検証済み」と表現しない。
 
 ### 3. `database` — optional feature
 

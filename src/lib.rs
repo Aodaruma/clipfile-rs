@@ -8,9 +8,16 @@
 
 mod container;
 mod error;
+mod external;
+mod limits;
 
 pub use container::{
     CHUNK_HEADER_SIZE, ChunkHeader, ChunkIter, ChunkKind, ClipFile, ExternalChunkHeader,
     FileHeader, ROOT_HEADER_SIZE, RootHeader, ValidationSummary,
 };
 pub use error::{Error, Result};
+pub use external::{
+    Block, BlockData, BlockParameters, BlockPayload, ByteOrder, ExternalBody, ExternalObject,
+    LengthPrefixedZlib, MediaKind,
+};
+pub use limits::Limits;

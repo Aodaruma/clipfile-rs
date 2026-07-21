@@ -52,6 +52,22 @@ pub enum Error {
         /// Human-readable reason for the rejection.
         reason: &'static str,
     },
+    /// A block-data body has an invalid internal layout.
+    InvalidBlockData {
+        /// Absolute offset at which the problem was found.
+        offset: u64,
+        /// Human-readable reason for the rejection.
+        reason: &'static str,
+    },
+    /// A configurable parser safety limit was exceeded.
+    LimitExceeded {
+        /// Name of the limited resource.
+        resource: &'static str,
+        /// Value found in the input.
+        value: u64,
+        /// Configured maximum.
+        limit: u64,
+    },
     /// A method received a chunk of the wrong kind.
     UnexpectedChunk {
         /// Chunk required by the operation.
@@ -107,6 +123,17 @@ impl fmt::Display for Error {
             Self::InvalidExternalChunk { reason } => {
                 write!(formatter, "invalid CHNKExta payload: {reason}")
             }
+            Self::InvalidBlockData { offset, reason } => {
+                write!(formatter, "invalid block data at offset {offset}: {reason}")
+            }
+            Self::LimitExceeded {
+                resource,
+                value,
+                limit,
+            } => write!(
+                formatter,
+                "{resource} value {value} exceeds configured limit {limit}"
+            ),
             Self::UnexpectedChunk { expected, actual } => {
                 write!(formatter, "expected {expected}, found {actual:?}")
             }

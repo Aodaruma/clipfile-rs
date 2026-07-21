@@ -12,3 +12,5 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Initial crate and project infrastructure.
 - Streaming parser for the CLIP top-level container.
 - Structural validation and an `inspect` example.
+- Configurable parsing safety limits.
+- External-body classification and block-data indexing.

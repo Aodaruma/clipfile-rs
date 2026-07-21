@@ -14,7 +14,9 @@ Implemented:
 - top-level `CHNKHead`, `CHNKExta`, `CHNKSQLi`, and `CHNKFoot` discovery;
 - strict size, offset, and chunk-order validation;
 - bounded or streaming access to chunk payloads; and
-- parsing of file and external-object headers.
+- parsing of file and external-object headers;
+- classification of block data, length-prefixed zlib streams, and audio; and
+- block indexing without loading compressed tile payloads.
 
 Not implemented yet:
 
@@ -25,7 +27,8 @@ Not implemented yet:
 
 See [the format analysis](docs/format-analysis.md) and
 [the implementation plan](docs/implementation-plan.md) for the research status
-and planned API layers.
+and planned API layers. Unresolved details are tracked in
+[the open-questions log](docs/open-questions.md).
 
 ## Example
 
@@ -47,6 +50,7 @@ To inspect a local file without loading its large payloads into memory:
 
 ```console
 cargo run --example inspect -- path/to/drawing.clip
+cargo run --example inspect -- path/to/drawing.clip --deep
 ```
 
 The API is intentionally read-only at this stage. Treat all input as

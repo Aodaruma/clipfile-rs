@@ -1,13 +1,12 @@
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
-use crate::{Error, Result};
+use crate::{Error, Limits, Result};
 
 const ROOT_MAGIC: [u8; 8] = *b"CSFCHUNK";
 const FILE_HEADER_TAG: [u8; 8] = *b"CHNKHead";
 const EXTERNAL_TAG: [u8; 8] = *b"CHNKExta";
 const SQLITE_TAG: [u8; 8] = *b"CHNKSQLi";
 const FOOTER_TAG: [u8; 8] = *b"CHNKFoot";
-const MAX_IDENTIFIER_SIZE: u64 = 64 * 1024;
 
 /// Size of the root container header in bytes.
 pub const ROOT_HEADER_SIZE: u64 = 24;
@@ -141,9 +140,9 @@ impl FileHeader {
 /// Parsed prefix of a `CHNKExta` payload.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExternalChunkHeader {
-    identifier: Box<[u8]>,
-    body_offset: u64,
-    body_size: u64,
+    pub(crate) identifier: Box<[u8]>,
+    pub(crate) body_offset: u64,
+    pub(crate) body_size: u64,
 }
 
 impl ExternalChunkHeader {
@@ -193,15 +192,21 @@ impl ValidationSummary {
 /// not loaded into memory. Use [`ClipFile::chunks`] to scan metadata and
 /// [`ClipFile::copy_chunk_payload`] to stream an individual payload.
 pub struct ClipFile<R> {
-    reader: R,
+    pub(crate) reader: R,
     root_header: RootHeader,
     file_header: FileHeader,
-    file_size: u64,
+    pub(crate) file_size: u64,
+    pub(crate) limits: Limits,
 }
 
 impl<R: Read + Seek> ClipFile<R> {
     /// Opens and validates the root and file headers of a seekable stream.
-    pub fn open(mut reader: R) -> Result<Self> {
+    pub fn open(reader: R) -> Result<Self> {
+        Self::open_with_limits(reader, Limits::default())
+    }
+
+    /// Opens a seekable stream with custom parser safety limits.
+    pub fn open_with_limits(mut reader: R, limits: Limits) -> Result<Self> {
         let actual_size = reader.seek(SeekFrom::End(0))?;
         reader.seek(SeekFrom::Start(0))?;
 
@@ -236,13 +241,15 @@ impl<R: Read + Seek> ClipFile<R> {
         if header_chunk.tag != FILE_HEADER_TAG {
             return Err(Error::MissingFileHeader);
         }
-        let file_header = read_file_header(&mut reader, &header_chunk)?;
+        let file_header =
+            read_file_header(&mut reader, &header_chunk, limits.max_identifier_size())?;
 
         Ok(Self {
             reader,
             root_header,
             file_header,
             file_size: actual_size,
+            limits,
         })
     }
 
@@ -258,12 +265,20 @@ impl<R: Read + Seek> ClipFile<R> {
         &self.file_header
     }
 
+    /// Returns the active parser safety limits.
+    #[must_use]
+    pub const fn limits(&self) -> Limits {
+        self.limits
+    }
+
     /// Returns an iterator over top-level chunk headers.
     pub fn chunks(&mut self) -> ChunkIter<'_, R> {
         ChunkIter {
             reader: &mut self.reader,
             next_offset: Some(self.root_header.first_chunk_offset),
             file_size: self.file_size,
+            chunks_seen: 0,
+            max_chunks: self.limits.max_top_level_chunks(),
         }
     }
 
@@ -277,7 +292,7 @@ impl<R: Read + Seek> ClipFile<R> {
         }
         self.reader.seek(SeekFrom::Start(chunk.payload_offset))?;
         let identifier_size = read_u64_be(&mut self.reader)?;
-        if identifier_size > MAX_IDENTIFIER_SIZE {
+        if identifier_size > self.limits.max_identifier_size() {
             return Err(Error::InvalidExternalChunk {
                 reason: "external identifier exceeds the safety limit",
             });
@@ -370,6 +385,7 @@ impl<R: Read + Seek> ClipFile<R> {
     pub fn validate(&mut self) -> Result<ValidationSummary> {
         let database_offset = self.file_header.database_offset;
         let file_size = self.file_size;
+        let max_database_size = self.limits.max_database_size();
         let mut chunks = self.chunks();
         let first = chunks.next().transpose()?.ok_or(Error::MissingFileHeader)?;
         if first.kind() != ChunkKind::Header {
@@ -388,6 +404,13 @@ impl<R: Read + Seek> ClipFile<R> {
                         .ok_or(Error::OffsetOverflow)?;
                 }
                 ChunkKind::Sqlite if database_payload_size.is_none() => {
+                    if chunk.payload_size > max_database_size {
+                        return Err(Error::LimitExceeded {
+                            resource: "SQLite payload size",
+                            value: chunk.payload_size,
+                            limit: max_database_size,
+                        });
+                    }
                     if chunk.offset != database_offset {
                         return Err(Error::InvalidChunkSequence {
                             reason: "SQLite offset does not match CHNKHead",
@@ -433,6 +456,8 @@ pub struct ChunkIter<'a, R> {
     reader: &'a mut R,
     next_offset: Option<u64>,
     file_size: u64,
+    chunks_seen: u64,
+    max_chunks: u64,
 }
 
 impl<R: Read + Seek> Iterator for ChunkIter<'_, R> {
@@ -444,10 +469,19 @@ impl<R: Read + Seek> Iterator for ChunkIter<'_, R> {
             self.next_offset = None;
             return None;
         }
+        if self.chunks_seen >= self.max_chunks {
+            self.next_offset = None;
+            return Some(Err(Error::LimitExceeded {
+                resource: "top-level chunk count",
+                value: self.chunks_seen.saturating_add(1),
+                limit: self.max_chunks,
+            }));
+        }
         match read_chunk_header(self.reader, offset, self.file_size) {
             Ok(chunk) => match chunk.end_offset() {
                 Ok(end_offset) => {
                     self.next_offset = Some(end_offset);
+                    self.chunks_seen += 1;
                     Some(Ok(chunk))
                 }
                 Err(error) => {
@@ -502,7 +536,11 @@ fn read_chunk_header<R: Read + Seek>(
     })
 }
 
-fn read_file_header<R: Read + Seek>(reader: &mut R, chunk: &ChunkHeader) -> Result<FileHeader> {
+fn read_file_header<R: Read + Seek>(
+    reader: &mut R,
+    chunk: &ChunkHeader,
+    max_identifier_size: u64,
+) -> Result<FileHeader> {
     if chunk.payload_size < 24 {
         return Err(Error::InvalidFileHeader {
             reason: "payload is shorter than the fixed fields",
@@ -512,7 +550,7 @@ fn read_file_header<R: Read + Seek>(reader: &mut R, chunk: &ChunkHeader) -> Resu
     let format_version = read_u64_be(reader)?;
     let database_offset = read_u64_be(reader)?;
     let identifier_size = read_u64_be(reader)?;
-    if identifier_size > MAX_IDENTIFIER_SIZE {
+    if identifier_size > max_identifier_size {
         return Err(Error::InvalidFileHeader {
             reason: "identifier exceeds the safety limit",
         });
