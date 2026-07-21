@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-07-22
+
 ### Added
 
 - Initial crate and project infrastructure.
@@ -17,3 +19,6 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Optional bundled-SQLite access, schema discovery, and external-index validation.
 - Optional offscreen metadata parsing, bounded zlib tile decoding, and raster assembly.
 - Project, canvas, layer, and cycle-checked layer-tree models.
+
+[Unreleased]: https://github.com/Aodaruma/clipfile-rs/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/Aodaruma/clipfile-rs/releases/tag/v0.1.0

@@ -1,5 +1,9 @@
 # clipfile
 
+[![CI](https://github.com/Aodaruma/clipfile-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/Aodaruma/clipfile-rs/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/clipfile.svg)](https://crates.io/crates/clipfile)
+[![docs.rs](https://docs.rs/clipfile/badge.svg)](https://docs.rs/clipfile)
+
 An experimental Rust parser and toolkit for CLIP STUDIO PAINT `.clip` files.
 
 The file format is proprietary and does not have a public official
@@ -31,6 +35,23 @@ See [the format analysis](docs/format-analysis.md) and
 and planned API layers. [The model guide](docs/model.md) explains the
 high-level SQLite view. Unresolved details are tracked in
 [the open-questions log](docs/open-questions.md).
+
+## Installation
+
+The container parser has no default dependencies:
+
+```toml
+[dependencies]
+clipfile = "0.1"
+```
+
+Enable `sqlite` for document metadata, or `raster` for both SQLite and raster
+decoding:
+
+```toml
+[dependencies]
+clipfile = { version = "0.1", features = ["raster"] }
+```
 
 ## Example
 
