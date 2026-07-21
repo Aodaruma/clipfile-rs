@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+*.clip binary
+*.cmc binary
+*.sqlite3 binary
