@@ -16,3 +16,4 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - External-body classification and block-data indexing.
 - Optional bundled-SQLite access, schema discovery, and external-index validation.
 - Optional offscreen metadata parsing, bounded zlib tile decoding, and raster assembly.
+- Project, canvas, layer, and cycle-checked layer-tree models.

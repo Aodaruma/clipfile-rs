@@ -28,6 +28,7 @@ cargo package --locked
 ```console
 cargo run --example inspect -- tester/data/example.clip
 cargo run --features sqlite --example inspect -- tester/data/example.clip --database
+cargo run --features sqlite --example inspect -- tester/data/example.clip --document
 cargo run --features raster --example inspect -- tester/data/example.clip --raster
 ```
 

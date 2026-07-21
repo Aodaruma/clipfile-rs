@@ -6,15 +6,17 @@ fn main() -> ExitCode {
     let arguments = env::args_os().skip(1).collect::<Vec<_>>();
     let Some(path) = arguments.first() else {
         eprintln!(
-            "usage: cargo run --example inspect -- <file.clip> [--deep] [--database] [--raster]"
+            "usage: cargo run --example inspect -- <file.clip> \
+             [--deep] [--database] [--raster] [--document]"
         );
         return ExitCode::from(2);
     };
     let deep = arguments.iter().skip(1).any(|value| value == "--deep");
     let database = arguments.iter().skip(1).any(|value| value == "--database");
     let raster = arguments.iter().skip(1).any(|value| value == "--raster");
+    let document = arguments.iter().skip(1).any(|value| value == "--document");
 
-    match inspect(path, deep, database, raster) {
+    match inspect(path, deep, database, raster, document) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error}");
@@ -28,6 +30,7 @@ fn inspect(
     deep: bool,
     database: bool,
     raster: bool,
+    document: bool,
 ) -> clipfile::Result<()> {
     let mut clip = ClipFile::open(File::open(path)?)?;
     let root = clip.root_header();
@@ -45,6 +48,43 @@ fn inspect(
     }
     inspect_database_if_requested(&mut clip, database)?;
     inspect_raster_if_requested(&mut clip, raster)?;
+    inspect_document_if_requested(&mut clip, document)?;
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+fn inspect_document_if_requested<R: std::io::Read + std::io::Seek>(
+    clip: &mut ClipFile<R>,
+    requested: bool,
+) -> clipfile::Result<()> {
+    if requested {
+        let document = clip.read_document()?;
+        println!(
+            "document: version {}, {} canvas(es), {} layer row(s)",
+            document.project().internal_version(),
+            document.canvases().len(),
+            document.layers().len()
+        );
+        for tree in document.layer_trees() {
+            println!(
+                "canvas {} tree: {} reachable, {} unreachable",
+                tree.canvas_id(),
+                tree.reachable_layer_count(),
+                tree.unreachable_layer_ids().len()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "sqlite"))]
+fn inspect_document_if_requested<R: std::io::Read + std::io::Seek>(
+    _clip: &mut ClipFile<R>,
+    requested: bool,
+) -> clipfile::Result<()> {
+    if requested {
+        eprintln!("--document requires: cargo run --features sqlite --example inspect -- ...");
+    }
     Ok(())
 }
 

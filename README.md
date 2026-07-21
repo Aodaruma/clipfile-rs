@@ -18,17 +18,18 @@ Implemented:
 - classification of block data, length-prefixed zlib streams, and audio;
 - block indexing without loading compressed tile payloads;
 - optional, read-only SQLite access with runtime schema discovery; and
+- high-level project, canvas, layer, and validated layer-tree models; and
 - optional `Offscreen.Attribute`, zlib tile, and RGBA/grayscale raster decoding.
 
 Not implemented yet:
 
-- higher-level canvas/layer models;
 - vector, text, animation, or `.cmc` support; and
 - writing or modifying files.
 
 See [the format analysis](docs/format-analysis.md) and
 [the implementation plan](docs/implementation-plan.md) for the research status
-and planned API layers. Unresolved details are tracked in
+and planned API layers. [The model guide](docs/model.md) explains the
+high-level SQLite view. Unresolved details are tracked in
 [the open-questions log](docs/open-questions.md).
 
 ## Example
@@ -53,6 +54,7 @@ To inspect a local file without loading its large payloads into memory:
 cargo run --example inspect -- path/to/drawing.clip
 cargo run --example inspect -- path/to/drawing.clip --deep
 cargo run --features sqlite --example inspect -- path/to/drawing.clip --database
+cargo run --features sqlite --example inspect -- path/to/drawing.clip --document
 cargo run --features raster --example inspect -- path/to/drawing.clip --raster
 ```
 
@@ -60,6 +62,11 @@ The optional `sqlite` feature uses a bundled SQLite build for reproducible
 linking across supported platforms. It provides `ClipFile::open_database`,
 runtime table/column discovery, integrity checking, and cross-validation of
 the `ExternalChunk` index.
+
+With the same feature, `ClipFile::read_document` builds a `Document` with
+project/canvas metadata, core layer properties, mipmap references, and a
+validated `LayerTree`. Raw flags and numeric kinds remain available so newer
+format values are not discarded.
 
 The `raster` feature builds on `sqlite`. It resolves a layer or mipmap to its
 base offscreen data, supports bounded tile-by-tile decompression, and can

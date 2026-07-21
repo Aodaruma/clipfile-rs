@@ -110,6 +110,12 @@ pub enum Error {
     /// An operation on the embedded SQLite database failed.
     #[cfg(feature = "sqlite")]
     Sqlite(rusqlite::Error),
+    /// The high-level document model is internally inconsistent.
+    #[cfg(feature = "sqlite")]
+    InvalidDocument {
+        /// Human-readable details.
+        reason: String,
+    },
     /// Raster metadata or decoded pixels are structurally inconsistent.
     #[cfg(feature = "raster")]
     InvalidRaster {
@@ -192,6 +198,10 @@ impl fmt::Display for Error {
             }
             #[cfg(feature = "sqlite")]
             Self::Sqlite(error) => write!(formatter, "SQLite error: {error}"),
+            #[cfg(feature = "sqlite")]
+            Self::InvalidDocument { reason } => {
+                write!(formatter, "invalid CLIP document model: {reason}")
+            }
             #[cfg(feature = "raster")]
             Self::InvalidRaster { reason } => write!(formatter, "invalid raster data: {reason}"),
             #[cfg(feature = "raster")]

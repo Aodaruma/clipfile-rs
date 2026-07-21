@@ -12,6 +12,8 @@ mod database;
 mod error;
 mod external;
 mod limits;
+#[cfg(feature = "sqlite")]
+mod model;
 #[cfg(feature = "raster")]
 mod raster;
 
@@ -30,6 +32,8 @@ pub use external::{
     LengthPrefixedZlib, MediaKind,
 };
 pub use limits::Limits;
+#[cfg(feature = "sqlite")]
+pub use model::{BlendMode, Canvas, Document, Layer, LayerKind, LayerTree, Project};
 #[cfg(feature = "raster")]
 pub use raster::{
     DecodedTile, OffscreenAttributes, PixelFormat, PixelPacking, RasterDataState, RasterImage,

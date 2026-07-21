@@ -8,6 +8,7 @@ pub struct Limits {
     max_decompressed_block_size: u64,
     max_raster_bytes: u64,
     max_layers: u64,
+    max_layer_tree_depth: u64,
     max_canvas_dimension: u32,
 }
 
@@ -52,6 +53,12 @@ impl Limits {
     #[must_use]
     pub const fn max_layers(&self) -> u64 {
         self.max_layers
+    }
+
+    /// Returns the maximum accepted layer-tree depth.
+    #[must_use]
+    pub const fn max_layer_tree_depth(&self) -> u64 {
+        self.max_layer_tree_depth
     }
 
     /// Returns the maximum accepted width or height of a canvas.
@@ -109,6 +116,13 @@ impl Limits {
         self
     }
 
+    /// Sets the maximum accepted layer-tree depth.
+    #[must_use]
+    pub const fn with_max_layer_tree_depth(mut self, value: u64) -> Self {
+        self.max_layer_tree_depth = value;
+        self
+    }
+
     /// Sets the maximum accepted width or height of a canvas.
     #[must_use]
     pub const fn with_max_canvas_dimension(mut self, value: u32) -> Self {
@@ -127,6 +141,7 @@ impl Default for Limits {
             max_decompressed_block_size: 16 * 1024 * 1024,
             max_raster_bytes: 1024 * 1024 * 1024,
             max_layers: 1_000_000,
+            max_layer_tree_depth: 4_096,
             max_canvas_dimension: 1_000_000,
         }
     }

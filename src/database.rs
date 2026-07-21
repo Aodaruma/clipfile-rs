@@ -163,7 +163,7 @@ pub struct Database {
 }
 
 impl Database {
-    fn from_connection(connection: Connection) -> Result<Self> {
+    pub(crate) fn from_connection(connection: Connection) -> Result<Self> {
         let schema = read_schema(&connection)?;
         Ok(Self { connection, schema })
     }
