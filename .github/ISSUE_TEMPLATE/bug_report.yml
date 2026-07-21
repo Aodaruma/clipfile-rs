@@ -1,0 +1,39 @@
+name: Parser bug
+description: Report a file that is rejected or parsed incorrectly
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not attach confidential artwork. Prefer a minimal file created only for reproduction.
+  - type: input
+    id: version
+    attributes:
+      label: clipfile version
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: producer
+    attributes:
+      label: Producing application and version
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: error
+    attributes:
+      label: Error and structural metadata
+      description: Include the inspect example output if it is safe to share.
