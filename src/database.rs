@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, io::Read, io::Seek, io::SeekFrom};
 
 use rusqlite::{Connection, MAIN_DB, params, types::ValueRef};
 
-use crate::{ChunkKind, ClipFile, Error, Result};
+use crate::{ChunkKind, ClipFile, Error, ExternalObject, Result};
 
 /// Metadata for one SQLite column.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -299,6 +299,38 @@ impl Database {
 }
 
 impl<R: Read + Seek> ClipFile<R> {
+    /// Resolves one SQLite external-object identifier to its validated chunk.
+    ///
+    /// `None` means the identifier is not present in `ExternalChunk`.
+    pub fn resolve_external_object(
+        &mut self,
+        database: &Database,
+        identifier: &[u8],
+    ) -> Result<Option<ExternalObject>> {
+        let Some(record) = database.external_chunk(identifier)? else {
+            return Ok(None);
+        };
+        let chunk = self.chunk_at_offset(record.offset())?;
+        if chunk.kind() != ChunkKind::External {
+            return Err(Error::InvalidDatabase {
+                reason: format!(
+                    "external index offset {} does not point to CHNKExta",
+                    record.offset()
+                ),
+            });
+        }
+        let object = self.inspect_external_chunk(&chunk)?;
+        if object.header().identifier() != identifier {
+            return Err(Error::InvalidDatabase {
+                reason: format!(
+                    "external identifier does not match the chunk at offset {}",
+                    record.offset()
+                ),
+            });
+        }
+        Ok(Some(object))
+    }
+
     /// Opens the embedded SQLite payload as a read-only in-memory database.
     ///
     /// This method is available with the `sqlite` feature. The database is

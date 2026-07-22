@@ -16,11 +16,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Bounded read and streaming copy APIs for complete external-object bodies.
 - Bounded UTF-8 text-layer extraction with opaque attribute preservation and
   checked parsing of additional-object arrays.
+- Optional timeline and image-cel selection decoding, including bounded BINC
+  mixer parsing and layer-UUID resolution.
+- Indexed external-object resolution through `ClipFile::resolve_external_object`.
 
 ### Documentation
 
 - Record real-file validation of 8-bit grayscale layer masks and opaque vector
-  references, and UTF-8 text storage; anonymize local-corpus reporting.
+  references, UTF-8 text storage, and image-cel animation curves; anonymize
+  local-corpus reporting.
 
 ## [0.1.0] - 2026-07-22
 

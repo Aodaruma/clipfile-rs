@@ -2,7 +2,7 @@ use std::io::{Read, Seek};
 
 use rusqlite::{params, types::ValueRef};
 
-use crate::{ChunkKind, ClipFile, Database, Error, Limits, Result};
+use crate::{ClipFile, Database, Error, Limits, Result};
 
 /// One `VectorObjectList` row and its opaque external-object identifier.
 ///
@@ -100,33 +100,14 @@ impl<R: Read + Seek> ClipFile<R> {
         limits: Limits,
     ) -> Result<Vec<u8>> {
         let identifier = source.external_identifier();
-        let record =
-            database
-                .external_chunk(identifier)?
-                .ok_or_else(|| Error::InvalidDatabase {
-                    reason: format!(
-                        "VectorObjectList row {} references a missing external object",
-                        source.id()
-                    ),
-                })?;
-        let chunk = self.chunk_at_offset(record.offset())?;
-        if chunk.kind() != ChunkKind::External {
-            return Err(Error::InvalidDatabase {
+        let object = self
+            .resolve_external_object(database, identifier)?
+            .ok_or_else(|| Error::InvalidDatabase {
                 reason: format!(
-                    "VectorObjectList row {} resolves to a non-external chunk",
+                    "VectorObjectList row {} references a missing external object",
                     source.id()
                 ),
-            });
-        }
-        let object = self.inspect_external_chunk(&chunk)?;
-        if object.header().identifier() != identifier {
-            return Err(Error::InvalidDatabase {
-                reason: format!(
-                    "VectorObjectList row {} does not match its external chunk",
-                    source.id()
-                ),
-            });
-        }
+            })?;
         self.read_external_body(&object, limits.max_vector_data_bytes())
     }
 }

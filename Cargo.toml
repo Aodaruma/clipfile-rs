@@ -22,6 +22,7 @@ rusqlite = { version = "0.39.0", default-features = false, features = ["bundled"
 default = []
 sqlite = ["dep:rusqlite"]
 raster = ["sqlite", "dep:flate2"]
+animation = ["sqlite", "dep:flate2"]
 
 [package.metadata.docs.rs]
 all-features = true

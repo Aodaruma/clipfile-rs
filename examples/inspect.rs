@@ -7,7 +7,7 @@ fn main() -> ExitCode {
     let Some(path) = arguments.first() else {
         eprintln!(
             "usage: cargo run --example inspect -- <file.clip> \
-             [--deep] [--database] [--raster] [--document]"
+             [--deep] [--database] [--raster] [--document] [--animation]"
         );
         return ExitCode::from(2);
     };
@@ -15,8 +15,9 @@ fn main() -> ExitCode {
     let database = arguments.iter().skip(1).any(|value| value == "--database");
     let raster = arguments.iter().skip(1).any(|value| value == "--raster");
     let document = arguments.iter().skip(1).any(|value| value == "--document");
+    let animation = arguments.iter().skip(1).any(|value| value == "--animation");
 
-    match inspect(path, deep, database, raster, document) {
+    match inspect(path, deep, database, raster, document, animation) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error}");
@@ -31,6 +32,7 @@ fn inspect(
     database: bool,
     raster: bool,
     document: bool,
+    animation: bool,
 ) -> clipfile::Result<()> {
     let mut clip = ClipFile::open(File::open(path)?)?;
     let root = clip.root_header();
@@ -49,6 +51,47 @@ fn inspect(
     inspect_database_if_requested(&mut clip, database)?;
     inspect_raster_if_requested(&mut clip, raster)?;
     inspect_document_if_requested(&mut clip, document)?;
+    inspect_animation_if_requested(&mut clip, animation)?;
+    Ok(())
+}
+
+#[cfg(feature = "animation")]
+fn inspect_animation_if_requested<R: std::io::Read + std::io::Seek>(
+    clip: &mut ClipFile<R>,
+    requested: bool,
+) -> clipfile::Result<()> {
+    if requested {
+        let database = clip.open_database()?;
+        if let Some(animation) = clip.read_animation(&database, clip.limits())? {
+            let keyframes = animation
+                .tracks()
+                .iter()
+                .map(|track| track.keyframes().len())
+                .sum::<usize>();
+            println!(
+                "animation: timeline {}, {} fps, frames {}..={}, {} cel tracks, {} keys",
+                animation.timeline().id(),
+                animation.timeline().frame_rate(),
+                animation.timeline().start_frame(),
+                animation.timeline().end_frame(),
+                animation.tracks().len(),
+                keyframes,
+            );
+        } else {
+            println!("animation: none");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "animation"))]
+fn inspect_animation_if_requested<R: std::io::Read + std::io::Seek>(
+    _clip: &mut ClipFile<R>,
+    requested: bool,
+) -> clipfile::Result<()> {
+    if requested {
+        eprintln!("--animation requires: cargo run --features animation --example inspect -- ...");
+    }
     Ok(())
 }
 

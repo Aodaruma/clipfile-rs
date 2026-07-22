@@ -6,6 +6,8 @@
 //! headers. Higher-level document and image APIs will be added as those parts
 //! of the format become sufficiently well understood.
 
+#[cfg(feature = "animation")]
+mod animation;
 mod container;
 #[cfg(feature = "sqlite")]
 mod database;
@@ -21,6 +23,8 @@ mod text;
 #[cfg(feature = "sqlite")]
 mod vector;
 
+#[cfg(feature = "animation")]
+pub use animation::{Animation, CelKeyframe, CelTrack, Timeline};
 pub use container::{
     CHUNK_HEADER_SIZE, ChunkHeader, ChunkIter, ChunkKind, ClipFile, ExternalChunkHeader,
     FileHeader, ROOT_HEADER_SIZE, RootHeader, ValidationSummary,

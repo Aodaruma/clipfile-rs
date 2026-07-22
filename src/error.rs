@@ -128,6 +128,12 @@ pub enum Error {
         /// Human-readable details.
         reason: String,
     },
+    /// Animation metadata or mixer data is structurally inconsistent.
+    #[cfg(feature = "animation")]
+    InvalidAnimation {
+        /// Human-readable details.
+        reason: String,
+    },
 }
 
 impl fmt::Display for Error {
@@ -207,6 +213,10 @@ impl fmt::Display for Error {
             #[cfg(feature = "raster")]
             Self::UnsupportedRaster { reason } => {
                 write!(formatter, "unsupported raster layout: {reason}")
+            }
+            #[cfg(feature = "animation")]
+            Self::InvalidAnimation { reason } => {
+                write!(formatter, "invalid animation data: {reason}")
             }
         }
     }

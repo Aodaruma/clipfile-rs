@@ -26,11 +26,13 @@ Implemented:
 - bounded `CanvasPreview` PNG extraction; and
 - bounded retrieval of opaque vector-layer external data; and
 - bounded UTF-8 text-layer content with opaque per-object attributes; and
+- optional timeline and image-cel selection-curve decoding; and
 - optional `Offscreen.Attribute`, zlib tile, and RGBA/grayscale raster decoding.
 
 Not implemented yet:
 
-- semantic vector/text-attribute decoding, animation, or `.cmc` support; and
+- semantic vector/text-attribute decoding, non-cel animation curves,
+  time-lapse, or `.cmc` support; and
 - writing or modifying files.
 
 See [the format analysis](docs/format-analysis.md) and
@@ -48,8 +50,8 @@ The container parser has no default dependencies:
 clipfile = "0.1"
 ```
 
-Enable `sqlite` for document metadata, or `raster` for both SQLite and raster
-decoding:
+Enable `sqlite` for document metadata, `raster` for SQLite and raster decoding,
+or `animation` for timeline and image-cel selection curves:
 
 ```toml
 [dependencies]
@@ -80,6 +82,7 @@ cargo run --example inspect -- path/to/drawing.clip --deep
 cargo run --features sqlite --example inspect -- path/to/drawing.clip --database
 cargo run --features sqlite --example inspect -- path/to/drawing.clip --document
 cargo run --features raster --example inspect -- path/to/drawing.clip --raster
+cargo run --features animation --example inspect -- path/to/drawing.clip --animation
 ```
 
 The optional `sqlite` feature uses a bundled SQLite build for reproducible
@@ -103,6 +106,12 @@ not interpreted until the vector-body structure is independently verified.
 with its original opaque attribute record. Length-prefixed extra-object arrays,
 total bytes, and object counts are bounded; font, paragraph, and transform
 attributes are not interpreted yet.
+
+The `animation` feature reads validated timeline ranges and resolves
+`TrackKind=2000` action mixers to their layer UUIDs. It bounds zlib expansion,
+checks the BINC string table and arrays, and exposes sorted `ImageCelName`
+keyframes through `Animation`, `Timeline`, and `CelTrack`. Other track kinds
+and time-lapse data remain opaque.
 
 The `raster` feature builds on `sqlite`. It resolves a layer render, layer
 mask, or mipmap to its base offscreen data, supports bounded tile-by-tile
