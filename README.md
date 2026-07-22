@@ -28,12 +28,14 @@ Implemented:
 - bounded UTF-8 text-layer content with opaque per-object attributes; and
 - optional timeline, generic primary action-mixer curves, image-cel selection,
   and audio/play-time curve decoding; and
+- optional validated time-lapse manager/record/blob chains with bounded reads
+  and streaming decompression; and
 - optional `Offscreen.Attribute`, zlib tile, and RGBA/grayscale raster decoding.
 
 Not implemented yet:
 
-- semantic vector/text-attribute decoding, non-cel animation curves,
-  time-lapse, or `.cmc` support; and
+- semantic vector/text-attribute decoding, secondary animation mixers,
+  semantic time-lapse frame indexing, or `.cmc` support; and
 - writing or modifying files.
 
 See [the format analysis](docs/format-analysis.md) and
@@ -52,11 +54,12 @@ clipfile = "0.1"
 ```
 
 Enable `sqlite` for document metadata, `raster` for SQLite and raster decoding,
-or `animation` for timeline and image-cel selection curves:
+`animation` for timeline curves, or `timelapse` for time-lapse metadata and
+payload access:
 
 ```toml
 [dependencies]
-clipfile = { version = "0.1", features = ["raster"] }
+clipfile = { version = "0.1", features = ["raster", "animation", "timelapse"] }
 ```
 
 ## Example
@@ -84,6 +87,7 @@ cargo run --features sqlite --example inspect -- path/to/drawing.clip --database
 cargo run --features sqlite --example inspect -- path/to/drawing.clip --document
 cargo run --features raster --example inspect -- path/to/drawing.clip --raster
 cargo run --features animation --example inspect -- path/to/drawing.clip --animation
+cargo run --features timelapse --example inspect -- path/to/drawing.clip --timelapse
 ```
 
 The optional `sqlite` feature uses a bundled SQLite build for reproducible
@@ -114,8 +118,15 @@ arrays, and exposes every `FCurve` in the primary action mixer, including
 interpolation, slopes, optional tags, and constant-revision flags. The existing
 `CelTrack` view selects the first `ImageCelName` curve for convenient frame
 lookup, while `AnimationTrack` preserves raw track kinds and all curves,
-including observed `PlayTime` and `AudioPlayer` data. Secondary mixers, track
-value maps, and time-lapse data remain opaque.
+including observed `PlayTime` and `AudioPlayer` data. Secondary mixers and
+track value maps remain opaque.
+
+The `timelapse` feature validates `TimeLapseManager`, `TimeLapseRecord`, and
+`TimeLapseBlob` linked lists, including canvas ownership, contiguous decoded
+offsets, declared sizes, external-object references, and the observed
+big-endian compressed-length prefix. `ClipFile::read_time_lapse_blob` returns
+one bounded decoded segment, while `copy_time_lapse_blob` streams it to a
+writer. The internal `GMIK`/RIFF frame index is not interpreted yet.
 
 The `raster` feature builds on `sqlite`. It resolves a layer render, layer
 mask, or mipmap to its base offscreen data, supports bounded tile-by-tile

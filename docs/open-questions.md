@@ -62,7 +62,14 @@
 - 状態: primary action mixerの全FCurveまで対応
 - 観測: 既存コーパス5件の291トラックから270曲線・12,347キーを復号した。`2000` は複数の `ImageCelName`、`4000` は `PlayTime`、`4001` は `AudioPlayer` / `PlayTime` を持つ。補間、左右傾き、任意タグもキー数一致を確認した。
 - 現在の扱い: raw track kindとprimary mixerの全曲線を公開する。`2000` と `4001` 以外のkind名、各 `Value` の単位は固定しない。従来の `CelTrack` は先頭の `ImageCelName` を使う。
-- 次の調査: `TrackActionMixer2`、`TrackValueMap`、`TrackKind=1000` / `2001` / `2003` の完全な意味、2Dカメラ、タイムラプスを最小差分で比較する。
+- 次の調査: `TrackActionMixer2`、`TrackValueMap`、`TrackKind=1000` / `2001` / `2003` の完全な意味、2Dカメラを最小差分で比較する。
+
+## タイムラプス内部ストリーム
+
+- 状態: record/blob連結とBLOB展開まで対応
+- 観測: 2サンプルの9 BLOBは `WEBP` encoder、big-endian長付きzlibで、DBの圧縮・展開サイズと連続offsetが一致した。展開先頭は `GMIK`、28 byte後にRIFFを持つ。
+- 現在の扱い: BLOB単位で上限付き読み取りまたはwriterへのストリーミング展開を行う。`BlobType` とencoder sequenceはraw値を保持する。
+- 次の調査: 匿名の短時間記録を作成し、操作回数・記録時間・保存タイミングの最小差分から `GMIK` ヘッダ、RIFF/WebPフレーム境界、時刻索引を解析する。
 
 ## GUI検証の運用
 

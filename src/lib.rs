@@ -20,6 +20,8 @@ mod model;
 mod raster;
 #[cfg(feature = "sqlite")]
 mod text;
+#[cfg(feature = "timelapse")]
+mod timelapse;
 #[cfg(feature = "sqlite")]
 mod vector;
 
@@ -52,5 +54,7 @@ pub use raster::{
 };
 #[cfg(feature = "sqlite")]
 pub use text::{TextLayerData, TextObjectData};
+#[cfg(feature = "timelapse")]
+pub use timelapse::{TimeLapse, TimeLapseBlob, TimeLapseManager, TimeLapseRecord};
 #[cfg(feature = "sqlite")]
 pub use vector::VectorDataSource;

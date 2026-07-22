@@ -20,6 +20,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   mixer parsing and layer-UUID resolution.
 - Generic primary action-mixer `FCurve` access with raw track kinds,
   interpolation, slopes, optional tags, and audio/play-time curve support.
+- Optional validated time-lapse manager, record, and blob chains with bounded
+  allocation and streaming zlib decoding.
 - Indexed external-object resolution through `ClipFile::resolve_external_object`.
 
 ### Documentation

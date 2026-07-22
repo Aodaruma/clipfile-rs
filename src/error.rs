@@ -134,6 +134,12 @@ pub enum Error {
         /// Human-readable details.
         reason: String,
     },
+    /// Time-lapse metadata or payload data is structurally inconsistent.
+    #[cfg(feature = "timelapse")]
+    InvalidTimeLapse {
+        /// Human-readable details.
+        reason: String,
+    },
 }
 
 impl fmt::Display for Error {
@@ -217,6 +223,10 @@ impl fmt::Display for Error {
             #[cfg(feature = "animation")]
             Self::InvalidAnimation { reason } => {
                 write!(formatter, "invalid animation data: {reason}")
+            }
+            #[cfg(feature = "timelapse")]
+            Self::InvalidTimeLapse { reason } => {
+                write!(formatter, "invalid time-lapse data: {reason}")
             }
         }
     }

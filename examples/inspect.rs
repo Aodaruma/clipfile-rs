@@ -7,7 +7,7 @@ fn main() -> ExitCode {
     let Some(path) = arguments.first() else {
         eprintln!(
             "usage: cargo run --example inspect -- <file.clip> \
-             [--deep] [--database] [--raster] [--document] [--animation]"
+             [--deep] [--database] [--raster] [--document] [--animation] [--timelapse]"
         );
         return ExitCode::from(2);
     };
@@ -16,8 +16,9 @@ fn main() -> ExitCode {
     let raster = arguments.iter().skip(1).any(|value| value == "--raster");
     let document = arguments.iter().skip(1).any(|value| value == "--document");
     let animation = arguments.iter().skip(1).any(|value| value == "--animation");
+    let timelapse = arguments.iter().skip(1).any(|value| value == "--timelapse");
 
-    match inspect(path, deep, database, raster, document, animation) {
+    match inspect(path, deep, database, raster, document, animation, timelapse) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error}");
@@ -33,6 +34,7 @@ fn inspect(
     raster: bool,
     document: bool,
     animation: bool,
+    timelapse: bool,
 ) -> clipfile::Result<()> {
     let mut clip = ClipFile::open(File::open(path)?)?;
     let root = clip.root_header();
@@ -52,6 +54,54 @@ fn inspect(
     inspect_raster_if_requested(&mut clip, raster)?;
     inspect_document_if_requested(&mut clip, document)?;
     inspect_animation_if_requested(&mut clip, animation)?;
+    inspect_time_lapse_if_requested(&mut clip, timelapse)?;
+    Ok(())
+}
+
+#[cfg(feature = "timelapse")]
+fn inspect_time_lapse_if_requested<R: std::io::Read + std::io::Seek>(
+    clip: &mut ClipFile<R>,
+    requested: bool,
+) -> clipfile::Result<()> {
+    if requested {
+        let database = clip.open_database()?;
+        if let Some(time_lapse) = database.time_lapse(clip.limits())? {
+            let records = time_lapse
+                .managers()
+                .iter()
+                .map(|manager| manager.records().len())
+                .sum::<usize>();
+            let blobs = time_lapse
+                .managers()
+                .iter()
+                .flat_map(|manager| manager.records())
+                .map(|record| record.blobs().len())
+                .sum::<usize>();
+            let decoded = time_lapse
+                .managers()
+                .iter()
+                .flat_map(|manager| manager.records())
+                .map(clipfile::TimeLapseRecord::decoded_size)
+                .sum::<u64>();
+            println!(
+                "time-lapse: {} manager(s), {records} record(s), {blobs} blob(s), {decoded} decoded bytes",
+                time_lapse.managers().len(),
+            );
+        } else {
+            println!("time-lapse: none");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "timelapse"))]
+fn inspect_time_lapse_if_requested<R: std::io::Read + std::io::Seek>(
+    _clip: &mut ClipFile<R>,
+    requested: bool,
+) -> clipfile::Result<()> {
+    if requested {
+        eprintln!("--timelapse requires: cargo run --features timelapse --example inspect -- ...");
+    }
     Ok(())
 }
 

@@ -201,12 +201,18 @@ BINC文字列表を用いて `FCurve` を列挙すると、`Frame` / `Value` に
 
 `LayerUuidWithTrack` の16-byte値は `Layer.LayerUuid` のテキスト表現と正規化後に一致し、全291トラックを対象レイヤーへ一意に対応できた。`TrackKind=4000` の4行には `PlayTime` 4曲線・8キー、`TrackKind=4001` の4行には `AudioPlayer` と `PlayTime` 合計10曲線・15キーがあった。`4001` は `Layer.AudioLayer=1` および `AudioVolume` トークンを持つため、音声制御トラックと確認できる。汎用公開APIはprimary `TrackActionMixer` の合計270曲線・12,347キーを読み、既存のセル選択ビューと検証用exporterも5件すべてで一致した。本文にはタイムライン名、セルタグ、音声名、レイヤー名、ファイル別の対応を記録しない。
 
+## タイムラプス
+
+既存コーパスの2件に `TimeLapseManager`、`TimeLapseRecord`、`TimeLapseBlob` が存在した。各managerはcanvasごとのrecord連結リスト、各recordはblob連結リストの先頭IDを持つ。2件ともmanager 1件・record 1件で、blobは合計9件だった。全blobで `BlobType=2`、`BlobData` は40-byte外部ID、外部本体はbig-endianの4-byte圧縮長を持つzlibだった。
+
+blobの `BlobOffset` はrecord内で0から隙間なく連続し、`BlobSizeCompressed` は4-byte長を含む外部本体サイズ、`BlobSize` は展開後サイズと一致した。9件をストリーミング展開した合計は436,576,484 byteである。`EncoderName` は2件とも `WEBP`、展開ストリームは `GMIK` で始まり、先頭28 byte後にRIFFシグネチャを持っていた。公開APIは連結リストの循環・共有・欠落、canvas不一致、offset、圧縮長、展開長、上限を検証する。`GMIK` 内部のフレーム境界や時刻はまだ解釈しない。
+
 ## 未解明・未確認事項
 
 - `BlockStatus` 値の意味とチェックサムアルゴリズム
 - 1-bit、異なるタイル寸法・追加チャンネル配置
 - ベクター本体、テキスト属性、3D、定規、特殊レイヤーの完全な意味
-- セル選択以外のアニメーショントラック、キー補間、タイムラプスの完全な意味
+- secondary animation mixer、track value map、タイムラプス内部フレーム索引の完全な意味
 - `.cmc` の外側構造と複数ページ参照
 - DBから参照されるが `ExternalChunk` に存在しない外部IDの意味
 - アプリケーションのバージョン間での完全なスキーマ移行規則
