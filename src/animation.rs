@@ -115,6 +115,158 @@ pub struct CelTrack {
     keyframes: Vec<CelKeyframe>,
 }
 
+/// Raw numeric kind stored in `Track.TrackKind`.
+///
+/// Only values with independently verified semantics have helper methods. All
+/// other values remain available through [`Self::raw`].
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct AnimationTrackKind(i64);
+
+impl AnimationTrackKind {
+    /// Creates a track kind without assigning unverified semantics.
+    #[must_use]
+    pub const fn new(raw: i64) -> Self {
+        Self(raw)
+    }
+
+    /// Returns the original `TrackKind` value.
+    #[must_use]
+    pub const fn raw(self) -> i64 {
+        self.0
+    }
+
+    /// Whether this is the verified image-cel selection kind (`2000`).
+    #[must_use]
+    pub const fn is_image_cel(self) -> bool {
+        self.0 == 2000
+    }
+
+    /// Whether this is the verified audio-control kind (`4001`).
+    #[must_use]
+    pub const fn is_audio(self) -> bool {
+        self.0 == 4001
+    }
+}
+
+/// One validated key from a generic animation `FCurve`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnimationCurveKeyframe {
+    time_60hz: f32,
+    value: f32,
+    tag: Option<String>,
+    interpolation: Option<String>,
+    left_slope: Option<f32>,
+    right_slope: Option<f32>,
+    revise_constant: Option<u8>,
+}
+
+impl AnimationCurveKeyframe {
+    /// Key time in the observed 60 Hz timebase.
+    #[must_use]
+    pub const fn time_60hz(&self) -> f32 {
+        self.time_60hz
+    }
+
+    /// Numeric curve value.
+    #[must_use]
+    pub const fn value(&self) -> f32 {
+        self.value
+    }
+
+    /// Optional string tag associated with the key.
+    #[must_use]
+    pub fn tag(&self) -> Option<&str> {
+        self.tag.as_deref()
+    }
+
+    /// Optional interpolation name as stored by CLIP STUDIO PAINT.
+    #[must_use]
+    pub fn interpolation(&self) -> Option<&str> {
+        self.interpolation.as_deref()
+    }
+
+    /// Optional incoming slope value.
+    #[must_use]
+    pub const fn left_slope(&self) -> Option<f32> {
+        self.left_slope
+    }
+
+    /// Optional outgoing slope value.
+    #[must_use]
+    pub const fn right_slope(&self) -> Option<f32> {
+        self.right_slope
+    }
+
+    /// Optional constant-interpolation revision flag.
+    #[must_use]
+    pub const fn revise_constant(&self) -> Option<u8> {
+        self.revise_constant
+    }
+}
+
+/// One named `FCurve` decoded from a track's primary action mixer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnimationCurve {
+    kind: String,
+    keyframes: Vec<AnimationCurveKeyframe>,
+}
+
+impl AnimationCurve {
+    /// Curve type, such as `ImageCelName`, `PlayTime`, or `AudioPlayer`.
+    #[must_use]
+    pub fn kind(&self) -> &str {
+        &self.kind
+    }
+
+    /// Sorted validated keys.
+    #[must_use]
+    pub fn keyframes(&self) -> &[AnimationCurveKeyframe] {
+        &self.keyframes
+    }
+}
+
+/// One timeline track and every validated curve in its primary action mixer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnimationTrack {
+    id: i64,
+    kind: AnimationTrackKind,
+    layer_id: Option<i64>,
+    action_mixer_present: bool,
+    curves: Vec<AnimationCurve>,
+}
+
+impl AnimationTrack {
+    /// `Track.MainId`.
+    #[must_use]
+    pub const fn id(&self) -> i64 {
+        self.id
+    }
+
+    /// Raw track kind with verified helpers for selected values.
+    #[must_use]
+    pub const fn kind(&self) -> AnimationTrackKind {
+        self.kind
+    }
+
+    /// Layer matched through `LayerUuidWithTrack`, when present.
+    #[must_use]
+    pub const fn layer_id(&self) -> Option<i64> {
+        self.layer_id
+    }
+
+    /// Whether `TrackActionMixer` was present.
+    #[must_use]
+    pub const fn action_mixer_present(&self) -> bool {
+        self.action_mixer_present
+    }
+
+    /// Every validated `FCurve` in the primary action mixer.
+    #[must_use]
+    pub fn curves(&self) -> &[AnimationCurve] {
+        &self.curves
+    }
+}
+
 impl CelTrack {
     /// `Track.MainId`.
     #[must_use]
@@ -154,6 +306,7 @@ impl CelTrack {
 pub struct Animation {
     timeline: Timeline,
     tracks: Vec<CelTrack>,
+    animation_tracks: Vec<AnimationTrack>,
 }
 
 impl Animation {
@@ -176,6 +329,15 @@ impl Animation {
             .binary_search_by_key(&layer_id, CelTrack::layer_id)
             .ok()
             .map(|index| &self.tracks[index])
+    }
+
+    /// All timeline tracks ordered by `Track.MainId`.
+    ///
+    /// This includes tracks without a decoded `FCurve` and preserves unknown
+    /// numeric track kinds.
+    #[must_use]
+    pub fn animation_tracks(&self) -> &[AnimationTrack] {
+        &self.animation_tracks
     }
 }
 
@@ -291,49 +453,102 @@ impl<R: Read + Seek> ClipFile<R> {
         } else {
             timelines[0].clone()
         };
-        let sources = cel_track_sources(database, &timeline, limits)?;
+        let sources = animation_track_sources(database, &timeline, limits)?;
         let layers = layer_uuid_ids(database, limits)?;
         let mut tracks = Vec::new();
+        let mut animation_tracks = Vec::new();
+        let mut total_curve_keys = 0_u64;
         for source in sources {
-            let layer_id = layers.get(&source.layer_uuid).copied().ok_or_else(|| {
-                animation_error(format!(
-                    "cel track {} has no matching layer UUID",
-                    source.id
-                ))
-            })?;
-            let object = self
-                .resolve_external_object(database, &source.external_identifier)?
-                .ok_or_else(|| {
+            let layer_id = match source.layer_uuid {
+                Some(uuid) => Some(layers.get(&uuid).copied().ok_or_else(|| {
                     animation_error(format!(
-                        "cel track {} references missing mixer data",
+                        "animation track {} has no matching layer UUID",
                         source.id
                     ))
-                })?;
-            let ExternalBody::LengthPrefixedZlib(stream) = object.body() else {
-                return Err(animation_error(format!(
-                    "cel track {} mixer is not a length-prefixed zlib stream",
-                    source.id
-                )));
+                })?),
+                None => None,
             };
-            if stream.byte_order() != ByteOrder::LittleEndian {
-                return Err(animation_error(format!(
-                    "cel track {} mixer uses an unexpected length byte order",
-                    source.id
-                )));
+            let curves = if let Some(identifier) = source.external_identifier.as_deref() {
+                let object = self
+                    .resolve_external_object(database, identifier)?
+                    .ok_or_else(|| {
+                        animation_error(format!(
+                            "animation track {} references missing mixer data",
+                            source.id
+                        ))
+                    })?;
+                let ExternalBody::LengthPrefixedZlib(stream) = object.body() else {
+                    return Err(animation_error(format!(
+                        "animation track {} mixer is not a length-prefixed zlib stream",
+                        source.id
+                    )));
+                };
+                if stream.byte_order() != ByteOrder::LittleEndian {
+                    return Err(animation_error(format!(
+                        "animation track {} mixer uses an unexpected length byte order",
+                        source.id
+                    )));
+                }
+                let compressed =
+                    self.read_length_prefixed_zlib(stream, limits.max_animation_bytes())?;
+                let mixer = decompress_mixer(&compressed, limits.max_animation_bytes())?;
+                let curves = parse_animation_curves(&mixer, limits)?;
+                for curve in &curves {
+                    total_curve_keys = total_curve_keys
+                        .checked_add(curve.keyframes.len() as u64)
+                        .ok_or(Error::OffsetOverflow)?;
+                    enforce_item_limit(
+                        total_curve_keys,
+                        limits.max_animation_items(),
+                        "animation curve keys",
+                    )?;
+                }
+                curves
+            } else {
+                Vec::new()
+            };
+            let kind = AnimationTrackKind::new(source.kind);
+            if kind.is_image_cel() {
+                let layer_id = layer_id.ok_or_else(|| {
+                    animation_error(format!("cel track {} has no layer UUID", source.id))
+                })?;
+                let curve = curves
+                    .iter()
+                    .find(|curve| curve.kind == "ImageCelName")
+                    .ok_or_else(|| {
+                        animation_error(format!(
+                            "cel track {} mixer has no ImageCelName curve",
+                            source.id
+                        ))
+                    })?;
+                let keyframes = curve
+                    .keyframes
+                    .iter()
+                    .map(|key| {
+                        Ok(CelKeyframe {
+                            time_60hz: key.time_60hz,
+                            value: key.value,
+                            tag: key.tag.clone().ok_or_else(|| {
+                                animation_error(format!(
+                                    "cel track {} ImageCelName key has no tag",
+                                    source.id
+                                ))
+                            })?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                tracks.push(CelTrack {
+                    id: source.id,
+                    layer_id,
+                    keyframes,
+                });
             }
-            let compressed =
-                self.read_length_prefixed_zlib(stream, limits.max_animation_bytes())?;
-            let mixer = decompress_mixer(&compressed, limits.max_animation_bytes())?;
-            let keyframes = parse_image_cel_curve(&mixer, limits)?.ok_or_else(|| {
-                animation_error(format!(
-                    "cel track {} mixer has no ImageCelName curve",
-                    source.id
-                ))
-            })?;
-            tracks.push(CelTrack {
+            animation_tracks.push(AnimationTrack {
                 id: source.id,
+                kind,
                 layer_id,
-                keyframes,
+                action_mixer_present: source.external_identifier.is_some(),
+                curves,
             });
         }
         tracks.sort_by_key(CelTrack::layer_id);
@@ -345,14 +560,19 @@ impl<R: Read + Seek> ClipFile<R> {
                 "multiple cel tracks resolve to the same layer",
             ));
         }
-        Ok(Some(Animation { timeline, tracks }))
+        Ok(Some(Animation {
+            timeline,
+            tracks,
+            animation_tracks,
+        }))
     }
 }
 
-struct CelTrackSource {
+struct AnimationTrackSource {
     id: i64,
-    external_identifier: Box<[u8]>,
-    layer_uuid: [u8; 16],
+    kind: i64,
+    external_identifier: Option<Box<[u8]>>,
+    layer_uuid: Option<[u8; 16]>,
 }
 
 fn preferred_timeline_id(database: &Database) -> Result<Option<i64>> {
@@ -376,11 +596,11 @@ fn preferred_timeline_id(database: &Database) -> Result<Option<i64>> {
         .filter(|id| *id != 0))
 }
 
-fn cel_track_sources(
+fn animation_track_sources(
     database: &Database,
     timeline: &Timeline,
     limits: Limits,
-) -> Result<Vec<CelTrackSource>> {
+) -> Result<Vec<AnimationTrackSource>> {
     if database.schema().table("Track").is_none() {
         if timeline.first_track_id.is_none() {
             return Ok(Vec::new());
@@ -397,9 +617,8 @@ fn cel_track_sources(
         database.require_column("Track", column)?;
     }
     let mut statement = database.connection().prepare(
-        "SELECT MainId, TrackActionMixer, LayerUuidWithTrack FROM Track \
-         WHERE BankId = ?1 AND TrackKind = 2000 AND TrackActionMixer IS NOT NULL \
-         ORDER BY MainId",
+        "SELECT MainId, TrackKind, TrackActionMixer, LayerUuidWithTrack FROM Track \
+         WHERE BankId = ?1 ORDER BY MainId",
     )?;
     let mut rows = statement.query(params![timeline.bank_id])?;
     let mut sources = Vec::new();
@@ -407,24 +626,29 @@ fn cel_track_sources(
         enforce_item_limit(
             sources.len() as u64 + 1,
             limits.max_animation_items(),
-            "animation cel tracks",
+            "animation tracks",
         )?;
-        let external = required_bytes(row.get_ref(1)?, 1, "TrackActionMixer")?;
-        enforce_byte_limit(
-            external.len() as u64,
-            limits.max_identifier_size(),
-            "animation external identifier",
-        )?;
-        let uuid = required_bytes(row.get_ref(2)?, 2, "LayerUuidWithTrack")?;
-        enforce_byte_limit(
-            uuid.len() as u64,
-            limits.max_identifier_size(),
-            "animation layer UUID",
-        )?;
-        sources.push(CelTrackSource {
+        let external = optional_bytes(row.get_ref(2)?, 2, "TrackActionMixer")?;
+        if let Some(value) = external {
+            enforce_byte_limit(
+                value.len() as u64,
+                limits.max_identifier_size(),
+                "animation external identifier",
+            )?;
+        }
+        let uuid = optional_bytes(row.get_ref(3)?, 3, "LayerUuidWithTrack")?;
+        if let Some(value) = uuid {
+            enforce_byte_limit(
+                value.len() as u64,
+                limits.max_identifier_size(),
+                "animation layer UUID",
+            )?;
+        }
+        sources.push(AnimationTrackSource {
             id: row.get(0)?,
-            external_identifier: Box::from(external),
-            layer_uuid: normalize_uuid(uuid)?,
+            kind: row.get(1)?,
+            external_identifier: external.map(Box::from),
+            layer_uuid: uuid.map(normalize_uuid).transpose()?,
         });
     }
     Ok(sources)
@@ -511,17 +735,70 @@ fn decompress_mixer(compressed: &[u8], limit: u64) -> Result<Vec<u8>> {
     Ok(data)
 }
 
+#[cfg(test)]
 fn parse_image_cel_curve(bytes: &[u8], limits: Limits) -> Result<Option<Vec<CelKeyframe>>> {
-    let strings = parse_string_table(bytes, limits)?;
-    let fcurve = string_id(&strings, "FCurve")?;
-    let curve_type = string_id(&strings, "Type")?;
-    let image_cel_name = string_id(&strings, "ImageCelName")?;
-    let pattern = [fcurve, 0, 1, curve_type, image_cel_name];
-    let Some(start) = find_u32_pattern(bytes, &pattern) else {
+    let Some(curve) = parse_animation_curves(bytes, limits)?
+        .into_iter()
+        .find(|curve| curve.kind == "ImageCelName")
+    else {
         return Ok(None);
     };
-    let mut cursor = start + pattern.len() * 4;
-    let field_count = read_u32(bytes, &mut cursor)?;
+    curve
+        .keyframes
+        .into_iter()
+        .map(|key| {
+            Ok(CelKeyframe {
+                time_60hz: key.time_60hz,
+                value: key.value,
+                tag: key
+                    .tag
+                    .ok_or_else(|| animation_error("ImageCelName key has no Tag value"))?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(Some)
+}
+
+fn parse_animation_curves(bytes: &[u8], limits: Limits) -> Result<Vec<AnimationCurve>> {
+    let strings = parse_string_table(bytes, limits)?;
+    let Some(fcurve) = string_id_optional(&strings, "FCurve") else {
+        return Ok(Vec::new());
+    };
+    let curve_type = string_id(&strings, "Type")?;
+    let pattern = [fcurve, 0, 1, curve_type];
+    let byte_len = pattern.len() * 4;
+    let mut curves = Vec::new();
+    for start in 0..=bytes.len().saturating_sub(byte_len + 8) {
+        if !u32_pattern_matches(bytes, start, &pattern) {
+            continue;
+        }
+        enforce_item_limit(
+            curves.len() as u64 + 1,
+            limits.max_animation_items(),
+            "animation mixer curves",
+        )?;
+        let mut cursor = start + byte_len;
+        let kind_id = read_u32(bytes, &mut cursor)?;
+        let kind = string_at(&strings, kind_id)?.to_owned();
+        curves.push(parse_animation_curve_fields(
+            bytes,
+            &strings,
+            &mut cursor,
+            kind,
+            limits,
+        )?);
+    }
+    Ok(curves)
+}
+
+fn parse_animation_curve_fields(
+    bytes: &[u8],
+    strings: &[String],
+    cursor: &mut usize,
+    kind: String,
+    limits: Limits,
+) -> Result<AnimationCurve> {
+    let field_count = read_u32(bytes, cursor)?;
     enforce_item_limit(
         u64::from(field_count),
         limits.max_animation_items().min(1_024),
@@ -530,12 +807,16 @@ fn parse_image_cel_curve(bytes: &[u8], limits: Limits) -> Result<Option<Vec<CelK
     let mut frames = None;
     let mut values = None;
     let mut tags = None;
+    let mut interpolation = None;
+    let mut left_slopes = None;
+    let mut right_slopes = None;
+    let mut revise_constant = None;
     for _ in 0..field_count {
-        let field_id = read_u32(bytes, &mut cursor)?;
-        let type_id = read_u32(bytes, &mut cursor)?;
-        let field = string_at(&strings, field_id)?;
-        let field_type = string_at(&strings, type_id)?;
-        let count = read_u32(bytes, &mut cursor)?;
+        let field_id = read_u32(bytes, cursor)?;
+        let type_id = read_u32(bytes, cursor)?;
+        let field = string_at(strings, field_id)?;
+        let field_type = string_at(strings, type_id)?;
+        let count = read_u32(bytes, cursor)?;
         enforce_item_limit(
             u64::from(count),
             limits.max_animation_items(),
@@ -543,7 +824,7 @@ fn parse_image_cel_curve(bytes: &[u8], limits: Limits) -> Result<Option<Vec<CelK
         )?;
         let count = count as usize;
         match field_type {
-            "Single[]" if field == "Frame" || field == "Value" => {
+            "Single[]" if matches!(field, "Frame" | "Value" | "LeftSlope" | "RightSlope") => {
                 let mut array = Vec::new();
                 array
                     .try_reserve_exact(count)
@@ -553,15 +834,17 @@ fn parse_image_cel_curve(bytes: &[u8], limits: Limits) -> Result<Option<Vec<CelK
                         limit: limits.max_animation_items(),
                     })?;
                 for _ in 0..count {
-                    array.push(f32::from_bits(read_u32(bytes, &mut cursor)?));
+                    array.push(f32::from_bits(read_u32(bytes, cursor)?));
                 }
-                if field == "Frame" {
-                    frames = Some(array);
-                } else {
-                    values = Some(array);
+                match field {
+                    "Frame" => frames = Some(array),
+                    "Value" => values = Some(array),
+                    "LeftSlope" => left_slopes = Some(array),
+                    "RightSlope" => right_slopes = Some(array),
+                    _ => unreachable!(),
                 }
             }
-            "String[]" if field == "Tag" => {
+            "String[]" if field == "Tag" || field == "Interp" => {
                 let mut array = Vec::new();
                 array
                     .try_reserve_exact(count)
@@ -571,65 +854,108 @@ fn parse_image_cel_curve(bytes: &[u8], limits: Limits) -> Result<Option<Vec<CelK
                         limit: limits.max_animation_items(),
                     })?;
                 for _ in 0..count {
-                    let value_id = read_u32(bytes, &mut cursor)?;
-                    array.push(string_at(&strings, value_id)?.to_owned());
+                    let value_id = read_u32(bytes, cursor)?;
+                    array.push(string_at(strings, value_id)?.to_owned());
                 }
-                tags = Some(array);
+                if field == "Tag" {
+                    tags = Some(array);
+                } else {
+                    interpolation = Some(array);
+                }
+            }
+            "Byte[]" if field == "ReviseConstant" => {
+                let end = cursor.checked_add(count).ok_or(Error::OffsetOverflow)?;
+                revise_constant = Some(
+                    bytes
+                        .get(*cursor..end)
+                        .ok_or_else(|| animation_error("truncated ReviseConstant array"))?
+                        .to_vec(),
+                );
+                *cursor = end;
             }
             "Single[]" | "String[]" | "Int32[]" => {
-                skip_array(bytes, &mut cursor, count, 4)?;
+                skip_array(bytes, cursor, count, 4)?;
             }
-            "Byte[]" => skip(bytes, &mut cursor, count)?,
-            "Float2[]" => skip_array(bytes, &mut cursor, count, 8)?,
-            "Float3[]" => skip_array(bytes, &mut cursor, count, 12)?,
-            "Quat[]" => skip_array(bytes, &mut cursor, count, 16)?,
-            "Matrix44[]" => skip_array(bytes, &mut cursor, count, 64)?,
+            "Byte[]" => skip(bytes, cursor, count)?,
+            "Float2[]" => skip_array(bytes, cursor, count, 8)?,
+            "Float3[]" => skip_array(bytes, cursor, count, 12)?,
+            "Quat[]" => skip_array(bytes, cursor, count, 16)?,
+            "Matrix44[]" => skip_array(bytes, cursor, count, 64)?,
             other => {
                 return Err(animation_error(format!(
                     "unsupported FCurve field type {other:?} for {field:?}"
                 )));
             }
         }
-        if [read_u32(bytes, &mut cursor)?, read_u32(bytes, &mut cursor)?] != [0, 0] {
+        if [read_u32(bytes, cursor)?, read_u32(bytes, cursor)?] != [0, 0] {
             return Err(animation_error(format!(
                 "FCurve field {field:?} has a nonzero terminator"
             )));
         }
-        if frames.is_some() && values.is_some() && tags.is_some() {
-            break;
-        }
     }
-    let frames = frames.ok_or_else(|| animation_error("ImageCelName has no Frame array"))?;
-    let values = values.ok_or_else(|| animation_error("ImageCelName has no Value array"))?;
-    let tags = tags.ok_or_else(|| animation_error("ImageCelName has no Tag array"))?;
-    if frames.len() != values.len() || frames.len() != tags.len() {
-        return Err(animation_error(format!(
-            "ImageCelName array lengths differ: frames={}, values={}, tags={}",
-            frames.len(),
-            values.len(),
-            tags.len()
-        )));
-    }
+    let frames = frames.ok_or_else(|| animation_error(format!("{kind} has no Frame array")))?;
+    let values = values.ok_or_else(|| animation_error(format!("{kind} has no Value array")))?;
+    let count = frames.len();
+    require_curve_array_length(&kind, "Value", values.len(), count)?;
+    require_optional_curve_array_length(&kind, "Tag", tags.as_ref(), count)?;
+    require_optional_curve_array_length(&kind, "Interp", interpolation.as_ref(), count)?;
+    require_optional_curve_array_length(&kind, "LeftSlope", left_slopes.as_ref(), count)?;
+    require_optional_curve_array_length(&kind, "RightSlope", right_slopes.as_ref(), count)?;
+    require_optional_curve_array_length(&kind, "ReviseConstant", revise_constant.as_ref(), count)?;
     if frames.iter().any(|value| !value.is_finite())
         || values.iter().any(|value| !value.is_finite())
         || frames.windows(2).any(|pair| pair[0] > pair[1])
     {
-        return Err(animation_error(
-            "ImageCelName curve contains invalid or unsorted numeric values",
-        ));
+        return Err(animation_error(format!(
+            "{kind} curve contains invalid or unsorted numeric values"
+        )));
     }
-    Ok(Some(
-        frames
-            .into_iter()
-            .zip(values)
-            .zip(tags)
-            .map(|((time_60hz, value), tag)| CelKeyframe {
-                time_60hz,
-                value,
-                tag,
-            })
-            .collect(),
-    ))
+    let mut keyframes = Vec::new();
+    keyframes
+        .try_reserve_exact(count)
+        .map_err(|_| Error::LimitExceeded {
+            resource: "animation curve key allocation",
+            value: count as u64,
+            limit: limits.max_animation_items(),
+        })?;
+    for (index, (time_60hz, value)) in frames.into_iter().zip(values).enumerate() {
+        keyframes.push(AnimationCurveKeyframe {
+            time_60hz,
+            value,
+            tag: tags.as_ref().map(|array| array[index].clone()),
+            interpolation: interpolation.as_ref().map(|array| array[index].clone()),
+            left_slope: left_slopes.as_ref().map(|array| array[index]),
+            right_slope: right_slopes.as_ref().map(|array| array[index]),
+            revise_constant: revise_constant.as_ref().map(|array| array[index]),
+        });
+    }
+    Ok(AnimationCurve { kind, keyframes })
+}
+
+fn require_curve_array_length(
+    curve: &str,
+    field: &str,
+    actual: usize,
+    expected: usize,
+) -> Result<()> {
+    if actual != expected {
+        return Err(animation_error(format!(
+            "{curve} {field} length {actual} differs from Frame length {expected}"
+        )));
+    }
+    Ok(())
+}
+
+fn require_optional_curve_array_length<T>(
+    curve: &str,
+    field: &str,
+    values: Option<&Vec<T>>,
+    expected: usize,
+) -> Result<()> {
+    if let Some(values) = values {
+        require_curve_array_length(curve, field, values.len(), expected)?;
+    }
+    Ok(())
 }
 
 fn parse_string_table(bytes: &[u8], limits: Limits) -> Result<Vec<String>> {
@@ -671,23 +997,27 @@ fn parse_string_table(bytes: &[u8], limits: Limits) -> Result<Vec<String>> {
     Ok(strings)
 }
 
-fn find_u32_pattern(bytes: &[u8], pattern: &[u32]) -> Option<usize> {
-    let byte_len = pattern.len().checked_mul(4)?;
-    (0..=bytes.len().checked_sub(byte_len)?).find(|start| {
-        pattern.iter().enumerate().all(|(index, expected)| {
-            let offset = start + index * 4;
-            u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("four bytes"))
-                == *expected
-        })
+fn u32_pattern_matches(bytes: &[u8], start: usize, pattern: &[u32]) -> bool {
+    pattern.iter().enumerate().all(|(index, expected)| {
+        let offset = start + index * 4;
+        bytes
+            .get(offset..offset + 4)
+            .and_then(|value| <[u8; 4]>::try_from(value).ok())
+            .map(u32::from_le_bytes)
+            == Some(*expected)
     })
 }
 
 fn string_id(strings: &[String], wanted: &str) -> Result<u32> {
+    string_id_optional(strings, wanted)
+        .ok_or_else(|| animation_error(format!("animation mixer lacks {wanted:?}")))
+}
+
+fn string_id_optional(strings: &[String], wanted: &str) -> Option<u32> {
     strings
         .iter()
         .position(|value| value == wanted)
         .and_then(|index| u32::try_from(index).ok())
-        .ok_or_else(|| animation_error(format!("animation mixer lacks {wanted:?}")))
 }
 
 fn string_at(strings: &[String], index: u32) -> Result<&str> {
@@ -732,6 +1062,22 @@ fn optional_text<'a>(
         ValueRef::Text(bytes) | ValueRef::Blob(bytes) => str::from_utf8(bytes)
             .map(Some)
             .map_err(|error| rusqlite::Error::Utf8Error(column, error)),
+        value => Err(rusqlite::Error::InvalidColumnType(
+            column,
+            name.to_owned(),
+            value.data_type(),
+        )),
+    }
+}
+
+fn optional_bytes<'a>(
+    value: ValueRef<'a>,
+    column: usize,
+    name: &str,
+) -> rusqlite::Result<Option<&'a [u8]>> {
+    match value {
+        ValueRef::Null => Ok(None),
+        ValueRef::Blob(bytes) | ValueRef::Text(bytes) => Ok(Some(bytes)),
         value => Err(rusqlite::Error::InvalidColumnType(
             column,
             name.to_owned(),
@@ -811,6 +1157,12 @@ mod tests {
             "String[]",
             "A",
             "B",
+            "Interp",
+            "LeftSlope",
+            "RightSlope",
+            "ReviseConstant",
+            "Byte[]",
+            "Linear",
         ];
         let mut bytes = Vec::from(b"cmt 0100binc".as_slice());
         bytes.extend_from_slice(&[0; 4]);
@@ -822,7 +1174,7 @@ mod tests {
         for value in [0, 0, 1, 1, 2] {
             push_u32(&mut bytes, value);
         }
-        push_u32(&mut bytes, 3);
+        push_u32(&mut bytes, 7);
 
         for (field, kind, values) in [(3, 4, [0.0_f32, 60.0]), (5, 4, [0.0_f32, 1.0])] {
             push_u32(&mut bytes, field);
@@ -839,6 +1191,28 @@ mod tests {
         push_u32(&mut bytes, 2);
         push_u32(&mut bytes, 8);
         push_u32(&mut bytes, 9);
+        push_u32(&mut bytes, 0);
+        push_u32(&mut bytes, 0);
+        push_u32(&mut bytes, 10);
+        push_u32(&mut bytes, 7);
+        push_u32(&mut bytes, 2);
+        push_u32(&mut bytes, 15);
+        push_u32(&mut bytes, 15);
+        push_u32(&mut bytes, 0);
+        push_u32(&mut bytes, 0);
+        for field in [11, 12] {
+            push_u32(&mut bytes, field);
+            push_u32(&mut bytes, 4);
+            push_u32(&mut bytes, 2);
+            push_u32(&mut bytes, 0.0_f32.to_bits());
+            push_u32(&mut bytes, 0.0_f32.to_bits());
+            push_u32(&mut bytes, 0);
+            push_u32(&mut bytes, 0);
+        }
+        push_u32(&mut bytes, 13);
+        push_u32(&mut bytes, 14);
+        push_u32(&mut bytes, 2);
+        bytes.extend_from_slice(&[1, 0]);
         push_u32(&mut bytes, 0);
         push_u32(&mut bytes, 0);
         bytes
@@ -942,6 +1316,23 @@ mod tests {
             .unwrap();
         assert_eq!(animation.timeline().id(), 1);
         assert_eq!(animation.tracks().len(), 1);
+        assert_eq!(animation.animation_tracks().len(), 1);
+        let raw_track = &animation.animation_tracks()[0];
+        assert!(raw_track.kind().is_image_cel());
+        assert_eq!(raw_track.layer_id(), Some(5));
+        assert_eq!(raw_track.curves().len(), 1);
+        assert_eq!(raw_track.curves()[0].kind(), "ImageCelName");
+        assert_eq!(raw_track.curves()[0].keyframes().len(), 2);
+        assert_eq!(raw_track.curves()[0].keyframes()[0].tag(), Some("A"));
+        assert_eq!(
+            raw_track.curves()[0].keyframes()[0].interpolation(),
+            Some("Linear")
+        );
+        assert_eq!(raw_track.curves()[0].keyframes()[0].left_slope(), Some(0.0));
+        assert_eq!(
+            raw_track.curves()[0].keyframes()[0].revise_constant(),
+            Some(1)
+        );
         let track = animation.track_for_layer(5).unwrap();
         assert_eq!(track.keyframes().len(), 2);
         assert_eq!(track.cel_at_frame(0.0, 24.0), Some("A"));

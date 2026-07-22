@@ -68,12 +68,26 @@ fn inspect_animation_if_requested<R: std::io::Read + std::io::Seek>(
                 .iter()
                 .map(|track| track.keyframes().len())
                 .sum::<usize>();
+            let curves = animation
+                .animation_tracks()
+                .iter()
+                .map(|track| track.curves().len())
+                .sum::<usize>();
+            let curve_keys = animation
+                .animation_tracks()
+                .iter()
+                .flat_map(|track| track.curves())
+                .map(|curve| curve.keyframes().len())
+                .sum::<usize>();
             println!(
-                "animation: timeline {}, {} fps, frames {}..={}, {} cel tracks, {} keys",
+                "animation: timeline {}, {} fps, frames {}..={}, {} tracks, {} curves / {} keys, {} cel tracks / {} selected keys",
                 animation.timeline().id(),
                 animation.timeline().frame_rate(),
                 animation.timeline().start_frame(),
                 animation.timeline().end_frame(),
+                animation.animation_tracks().len(),
+                curves,
+                curve_keys,
                 animation.tracks().len(),
                 keyframes,
             );

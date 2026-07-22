@@ -9,7 +9,7 @@
 - `CanvasPreview`: キャンバスID、形式値、寸法、エンコード済みプレビュー
 - `VectorDataSource`: ベクターデータ行、所有キャンバス・レイヤーID、不透明な外部ID
 - `TextLayerData` / `TextObjectData`: UTF-8本文、所有レイヤー、形式値、オブジェクト別の不透明な属性
-- `Animation` / `Timeline` / `CelTrack`: 再生範囲、fps、レイヤー対応、セル選択キー
+- `Animation` / `Timeline` / `AnimationTrack` / `AnimationCurve` / `CelTrack`: 再生範囲、fps、raw track kind、レイヤー対応、汎用FCurve、セル選択キー
 - `Layer`: 名前、種類、合成、可視性、不透明度、ロック、クリッピング、マスク、兄弟・子・Mipmap参照
 - `LayerTree`: ルートから再構成した子IDの順序と、到達不能なレイヤーID
 - `Document`: 上記の所有とID検索
@@ -34,7 +34,9 @@
 
 `Database::text_layer(layer_id, limits)` は、`TextLayerString` をUTF-8として検証し、対応する `TextLayerAttributes` と組にして返す。追加オブジェクトの配列は、4-byte little-endian長と本体の繰り返しとして境界を検証する。文字列と属性の件数一致を必須とし、総バイト数を `Limits::max_text_bytes`、オブジェクト数を `Limits::max_text_objects` で制限する。属性、追加属性、version値は意味を決め付けず元の値を保持する。
 
-`animation` featureの `Database::timelines(limits)` は、fpsと再生範囲を検証して全タイムラインを返す。`ClipFile::read_animation(database, limits)` は有効な `AnimationCutBank.FirstTimeLine` を優先し、同じbankの `TrackKind=2000` をセル選択トラックとして読む。`TrackActionMixer` はSQLiteの外部ID索引から直接解決し、little-endian長付きzlibを上限付きで展開する。BINCの文字列表と `ImageCelName` FCurveについて、配列境界、有限・昇順の60 Hzキー時刻、`Frame` / `Value` / `Tag` の同数性を検証する。トラックとレイヤーは16-byte UUIDで照合する。
+`animation` featureの `Database::timelines(limits)` は、fpsと再生範囲を検証して全タイムラインを返す。`ClipFile::read_animation(database, limits)` は有効な `AnimationCutBank.FirstTimeLine` を優先し、同じbankの全トラックを読む。primary `TrackActionMixer` はSQLiteの外部ID索引から直接解決し、little-endian長付きzlibを上限付きで展開する。BINC文字列表から全 `FCurve` を列挙し、配列境界、有限・昇順の60 Hzキー時刻、`Frame` / `Value` と任意の `Tag` / `Interp` / slope / `ReviseConstant` の同数性を検証する。`AnimationTrackKind` はraw値を保持し、意味を確認できた `2000` と `4001` だけに判定ヘルパーを持つ。トラックとレイヤーは16-byte UUIDで照合する。
+
+既存互換の `CelTrack` は `TrackKind=2000` の先頭 `ImageCelName` 曲線を使う。複数曲線、`PlayTime`、`AudioPlayer` を含むprimary mixerの全曲線は `Animation::animation_tracks()` から取得する。secondary mixerと `TrackValueMap` は現時点では解釈しない。
 
 `Limits::max_animation_bytes` は圧縮・展開ミキサーとタイムライン名、`Limits::max_animation_items` はタイムライン、トラック、BINC文字列・配列の上限に使う。
 
@@ -44,4 +46,4 @@
 
 `LayerType` はビットフラグとして複数用途を表し、`LayerComposite` にも将来値が追加され得る。このため `LayerKind` と `BlendMode` は閉じたenumにせず、`raw()` で元の整数を必ず返す。`is_pixel()` などは、現在確認できたビットだけを判定する補助APIである。
 
-ベクターは外部本体への安全な到達まで対応したが、線・制御点・ブラシ属性はまだ解釈しない。テキストは本文と属性レコードの境界まで対応したが、フォント・段落・変形属性は未解釈である。アニメーションはセル選択曲線まで対応したが、変形・カメラ・音声など他のトラック種別とタイムラプスは未解釈である。3D、定規の詳細BLOBも同様に未解釈である。これらは元のDBへ `Database::connection()` で読み取りアクセスできるが、安定した意味モデルとしては、最小差分コーパスで検証後に追加する。
+ベクターは外部本体への安全な到達まで対応したが、線・制御点・ブラシ属性はまだ解釈しない。テキストは本文と属性レコードの境界まで対応したが、フォント・段落・変形属性は未解釈である。アニメーションはprimary mixerのFCurveまで対応したが、secondary mixer、value map、カメラ等の完全な意味とタイムラプスは未解釈である。3D、定規の詳細BLOBも同様に未解釈である。これらは元のDBへ `Database::connection()` で読み取りアクセスできるが、安定した意味モデルとしては、最小差分コーパスで検証後に追加する。

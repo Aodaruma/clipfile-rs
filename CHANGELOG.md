@@ -18,6 +18,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   checked parsing of additional-object arrays.
 - Optional timeline and image-cel selection decoding, including bounded BINC
   mixer parsing and layer-UUID resolution.
+- Generic primary action-mixer `FCurve` access with raw track kinds,
+  interpolation, slopes, optional tags, and audio/play-time curve support.
 - Indexed external-object resolution through `ClipFile::resolve_external_object`.
 
 ### Documentation

@@ -24,7 +24,10 @@ mod text;
 mod vector;
 
 #[cfg(feature = "animation")]
-pub use animation::{Animation, CelKeyframe, CelTrack, Timeline};
+pub use animation::{
+    Animation, AnimationCurve, AnimationCurveKeyframe, AnimationTrack, AnimationTrackKind,
+    CelKeyframe, CelTrack, Timeline,
+};
 pub use container::{
     CHUNK_HEADER_SIZE, ChunkHeader, ChunkIter, ChunkKind, ClipFile, ExternalChunkHeader,
     FileHeader, ROOT_HEADER_SIZE, RootHeader, ValidationSummary,

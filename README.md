@@ -26,7 +26,8 @@ Implemented:
 - bounded `CanvasPreview` PNG extraction; and
 - bounded retrieval of opaque vector-layer external data; and
 - bounded UTF-8 text-layer content with opaque per-object attributes; and
-- optional timeline and image-cel selection-curve decoding; and
+- optional timeline, generic primary action-mixer curves, image-cel selection,
+  and audio/play-time curve decoding; and
 - optional `Offscreen.Attribute`, zlib tile, and RGBA/grayscale raster decoding.
 
 Not implemented yet:
@@ -107,11 +108,14 @@ with its original opaque attribute record. Length-prefixed extra-object arrays,
 total bytes, and object counts are bounded; font, paragraph, and transform
 attributes are not interpreted yet.
 
-The `animation` feature reads validated timeline ranges and resolves
-`TrackKind=2000` action mixers to their layer UUIDs. It bounds zlib expansion,
-checks the BINC string table and arrays, and exposes sorted `ImageCelName`
-keyframes through `Animation`, `Timeline`, and `CelTrack`. Other track kinds
-and time-lapse data remain opaque.
+The `animation` feature reads validated timeline ranges and resolves tracks to
+their layer UUIDs. It bounds zlib expansion, checks the BINC string table and
+arrays, and exposes every `FCurve` in the primary action mixer, including
+interpolation, slopes, optional tags, and constant-revision flags. The existing
+`CelTrack` view selects the first `ImageCelName` curve for convenient frame
+lookup, while `AnimationTrack` preserves raw track kinds and all curves,
+including observed `PlayTime` and `AudioPlayer` data. Secondary mixers, track
+value maps, and time-lapse data remain opaque.
 
 The `raster` feature builds on `sqlite`. It resolves a layer render, layer
 mask, or mipmap to its base offscreen data, supports bounded tile-by-tile
