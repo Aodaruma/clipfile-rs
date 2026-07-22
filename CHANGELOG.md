@@ -14,11 +14,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Bounded raw access to external vector-layer data through
   `Database::vector_data_sources` and `ClipFile::read_vector_data`.
 - Bounded read and streaming copy APIs for complete external-object bodies.
+- Bounded UTF-8 text-layer extraction with opaque attribute preservation and
+  checked parsing of additional-object arrays.
 
 ### Documentation
 
 - Record real-file validation of 8-bit grayscale layer masks and opaque vector
-  references, and anonymize local-corpus reporting.
+  references, and UTF-8 text storage; anonymize local-corpus reporting.
 
 ## [0.1.0] - 2026-07-22
 

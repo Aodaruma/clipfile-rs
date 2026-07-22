@@ -17,6 +17,8 @@ mod model;
 #[cfg(feature = "raster")]
 mod raster;
 #[cfg(feature = "sqlite")]
+mod text;
+#[cfg(feature = "sqlite")]
 mod vector;
 
 pub use container::{
@@ -41,5 +43,7 @@ pub use raster::{
     DecodedTile, OffscreenAttributes, PixelFormat, PixelPacking, RasterDataState, RasterImage,
     RasterSource,
 };
+#[cfg(feature = "sqlite")]
+pub use text::{TextLayerData, TextObjectData};
 #[cfg(feature = "sqlite")]
 pub use vector::VectorDataSource;

@@ -10,6 +10,8 @@ pub struct Limits {
     max_preview_bytes: u64,
     max_vector_data_bytes: u64,
     max_vector_objects: u64,
+    max_text_bytes: u64,
+    max_text_objects: u64,
     max_layers: u64,
     max_layer_tree_depth: u64,
     max_canvas_dimension: u32,
@@ -68,6 +70,18 @@ impl Limits {
     #[must_use]
     pub const fn max_vector_objects(&self) -> u64 {
         self.max_vector_objects
+    }
+
+    /// Returns the maximum accepted total text-layer payload size.
+    #[must_use]
+    pub const fn max_text_bytes(&self) -> u64 {
+        self.max_text_bytes
+    }
+
+    /// Returns the maximum number of text objects accepted for one layer.
+    #[must_use]
+    pub const fn max_text_objects(&self) -> u64 {
+        self.max_text_objects
     }
 
     /// Returns the maximum number of layers accepted by the document model.
@@ -151,6 +165,20 @@ impl Limits {
         self
     }
 
+    /// Sets the maximum accepted total text-layer payload size.
+    #[must_use]
+    pub const fn with_max_text_bytes(mut self, value: u64) -> Self {
+        self.max_text_bytes = value;
+        self
+    }
+
+    /// Sets the maximum number of text objects accepted for one layer.
+    #[must_use]
+    pub const fn with_max_text_objects(mut self, value: u64) -> Self {
+        self.max_text_objects = value;
+        self
+    }
+
     /// Sets the maximum number of layers accepted by the document model.
     #[must_use]
     pub const fn with_max_layers(mut self, value: u64) -> Self {
@@ -185,6 +213,8 @@ impl Default for Limits {
             max_preview_bytes: 256 * 1024 * 1024,
             max_vector_data_bytes: 256 * 1024 * 1024,
             max_vector_objects: 1_000_000,
+            max_text_bytes: 64 * 1024 * 1024,
+            max_text_objects: 1_000_000,
             max_layers: 1_000_000,
             max_layer_tree_depth: 4_096,
             max_canvas_dimension: 1_000_000,

@@ -25,11 +25,12 @@ Implemented:
 - high-level project, canvas, layer, and validated layer-tree models; and
 - bounded `CanvasPreview` PNG extraction; and
 - bounded retrieval of opaque vector-layer external data; and
+- bounded UTF-8 text-layer content with opaque per-object attributes; and
 - optional `Offscreen.Attribute`, zlib tile, and RGBA/grayscale raster decoding.
 
 Not implemented yet:
 
-- semantic vector decoding, text, animation, or `.cmc` support; and
+- semantic vector/text-attribute decoding, animation, or `.cmc` support; and
 - writing or modifying files.
 
 See [the format analysis](docs/format-analysis.md) and
@@ -97,6 +98,11 @@ PNG IHDR dimensions when the stored bytes are PNG.
 a layer. `ClipFile::read_vector_data` then retrieves each opaque external body
 under configurable row-count and byte-size limits. The bytes are intentionally
 not interpreted until the vector-body structure is independently verified.
+
+`Database::text_layer` validates stored text as UTF-8 and pairs each string
+with its original opaque attribute record. Length-prefixed extra-object arrays,
+total bytes, and object counts are bounded; font, paragraph, and transform
+attributes are not interpreted yet.
 
 The `raster` feature builds on `sqlite`. It resolves a layer render, layer
 mask, or mipmap to its base offscreen data, supports bounded tile-by-tile
