@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- Direct resolution of a layer-mask raster source through `Database::layer_mask_raster_source`.
+
+### Documentation
+
+- Record real-file validation of 8-bit grayscale layer masks and anonymize local-corpus reporting.
+
 ## [0.1.0] - 2026-07-22
 
 ### Added

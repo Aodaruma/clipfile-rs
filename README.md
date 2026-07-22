@@ -89,9 +89,10 @@ project/canvas metadata, core layer properties, mipmap references, and a
 validated `LayerTree`. Raw flags and numeric kinds remain available so newer
 format values are not discarded.
 
-The `raster` feature builds on `sqlite`. It resolves a layer or mipmap to its
-base offscreen data, supports bounded tile-by-tile decompression, and can
-assemble currently understood 8-bit `(alpha, BGRA)` or grayscale layouts.
+The `raster` feature builds on `sqlite`. It resolves a layer render, layer
+mask, or mipmap to its base offscreen data, supports bounded tile-by-tile
+decompression, and can assemble currently understood 8-bit `(alpha, BGRA)`
+or grayscale layouts.
 Unknown and bit-packed layouts return an explicit unsupported-format error.
 
 The API is intentionally read-only at this stage. Treat all input as

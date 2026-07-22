@@ -366,6 +366,25 @@ impl Database {
             _ => Ok(None),
         }
     }
+
+    /// Resolves the layer-mask mipmap for one layer.
+    pub fn layer_mask_raster_source(&self, layer_id: i64) -> Result<Option<RasterSource>> {
+        self.require_column("Layer", "MainId")?;
+        self.require_column("Layer", "LayerLayerMaskMipmap")?;
+        let mipmap_id = self
+            .connection()
+            .query_row(
+                "SELECT LayerLayerMaskMipmap FROM Layer WHERE MainId = ?1 LIMIT 1",
+                params![layer_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()?
+            .flatten();
+        match mipmap_id {
+            Some(id) if id != 0 => self.raster_source(id),
+            _ => Ok(None),
+        }
+    }
 }
 
 impl<R: Read + Seek> ClipFile<R> {
@@ -882,6 +901,7 @@ mod tests {
     use std::io::Write;
 
     use flate2::{Compression, write::ZlibEncoder};
+    use rusqlite::{Connection, params};
 
     use super::*;
 
@@ -941,6 +961,47 @@ mod tests {
         bytes
     }
 
+    fn raster_database() -> Database {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE Layer (
+                    MainId INTEGER,
+                    LayerRenderMipmap INTEGER,
+                    LayerLayerMaskMipmap INTEGER
+                 );
+                 INSERT INTO Layer VALUES (1, 10, 20);
+                 INSERT INTO Layer VALUES (2, 0, 0);
+                 CREATE TABLE Mipmap (MainId INTEGER, BaseMipmapInfo INTEGER);
+                 INSERT INTO Mipmap VALUES (10, 100);
+                 INSERT INTO Mipmap VALUES (20, 200);
+                 CREATE TABLE MipmapInfo (MainId INTEGER, Offscreen INTEGER);
+                 INSERT INTO MipmapInfo VALUES (100, 1000);
+                 INSERT INTO MipmapInfo VALUES (200, 2000);
+                 CREATE TABLE Offscreen (
+                    MainId INTEGER,
+                    LayerId INTEGER,
+                    Attribute BLOB,
+                    BlockData BLOB
+                 );",
+            )
+            .unwrap();
+        let attributes = attributes();
+        connection
+            .execute(
+                "INSERT INTO Offscreen VALUES (?1, ?2, ?3, NULL)",
+                params![1000_i64, 1_i64, &attributes],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO Offscreen VALUES (?1, ?2, ?3, NULL)",
+                params![2000_i64, 1_i64, &attributes],
+            )
+            .unwrap();
+        Database::from_connection(connection).unwrap()
+    }
+
     #[test]
     fn parses_complete_attributes() {
         let attributes = OffscreenAttributes::parse(&attributes()).unwrap();
@@ -963,6 +1024,19 @@ mod tests {
             OffscreenAttributes::parse(&bytes),
             Err(Error::InvalidRaster { .. })
         ));
+    }
+
+    #[test]
+    fn resolves_render_and_mask_sources_for_a_layer() {
+        let database = raster_database();
+        let render = database.layer_raster_source(1).unwrap().unwrap();
+        let mask = database.layer_mask_raster_source(1).unwrap().unwrap();
+        assert_eq!(render.mipmap_id(), 10);
+        assert_eq!(render.offscreen_id(), 1000);
+        assert_eq!(mask.mipmap_id(), 20);
+        assert_eq!(mask.offscreen_id(), 2000);
+        assert!(database.layer_mask_raster_source(2).unwrap().is_none());
+        assert!(database.layer_mask_raster_source(999).unwrap().is_none());
     }
 
     #[test]

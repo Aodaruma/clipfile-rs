@@ -34,6 +34,13 @@ cargo run --features raster --example inspect -- tester/data/example.clip --rast
 
 `tester/` はGit管理対象外である。サンプル、抽出DB、参考リポジトリ、解析結果を置けるが、「ignoreされている」ことは再配布許可を意味しない。機密作品や第三者作品をissueへ添付しない。
 
+実ファイル検証では次の境界を守る。
+
+- `.clip`、抽出DB、画像出力、検証専用スクリプトは `tester/` の外へ出さない。
+- commit前に `git status --ignored --short tester/` と `cargo package --list` で混入がないことを確認する。
+- 文書化するのは匿名IDまたは集計値、形式上必要な構造・数値だけとする。
+- 元ファイル名、作品名、レイヤー名、ユーザー名、絶対パス、画面に表示された最近使った場所をdocs・テスト名・commit messageへ記録しない。
+
 ## crates.io公開
 
 公開リポジトリは `https://github.com/Aodaruma/clipfile-rs` としてmanifestへ設定済みである。
