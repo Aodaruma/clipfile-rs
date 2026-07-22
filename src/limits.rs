@@ -8,6 +8,8 @@ pub struct Limits {
     max_decompressed_block_size: u64,
     max_raster_bytes: u64,
     max_preview_bytes: u64,
+    max_vector_data_bytes: u64,
+    max_vector_objects: u64,
     max_layers: u64,
     max_layer_tree_depth: u64,
     max_canvas_dimension: u32,
@@ -54,6 +56,18 @@ impl Limits {
     #[must_use]
     pub const fn max_preview_bytes(&self) -> u64 {
         self.max_preview_bytes
+    }
+
+    /// Returns the maximum accepted size of one raw vector-data body.
+    #[must_use]
+    pub const fn max_vector_data_bytes(&self) -> u64 {
+        self.max_vector_data_bytes
+    }
+
+    /// Returns the maximum number of vector-data rows accepted for one layer.
+    #[must_use]
+    pub const fn max_vector_objects(&self) -> u64 {
+        self.max_vector_objects
     }
 
     /// Returns the maximum number of layers accepted by the document model.
@@ -123,6 +137,20 @@ impl Limits {
         self
     }
 
+    /// Sets the maximum accepted size of one raw vector-data body.
+    #[must_use]
+    pub const fn with_max_vector_data_bytes(mut self, value: u64) -> Self {
+        self.max_vector_data_bytes = value;
+        self
+    }
+
+    /// Sets the maximum number of vector-data rows accepted for one layer.
+    #[must_use]
+    pub const fn with_max_vector_objects(mut self, value: u64) -> Self {
+        self.max_vector_objects = value;
+        self
+    }
+
     /// Sets the maximum number of layers accepted by the document model.
     #[must_use]
     pub const fn with_max_layers(mut self, value: u64) -> Self {
@@ -155,6 +183,8 @@ impl Default for Limits {
             max_decompressed_block_size: 16 * 1024 * 1024,
             max_raster_bytes: 1024 * 1024 * 1024,
             max_preview_bytes: 256 * 1024 * 1024,
+            max_vector_data_bytes: 256 * 1024 * 1024,
+            max_vector_objects: 1_000_000,
             max_layers: 1_000_000,
             max_layer_tree_depth: 4_096,
             max_canvas_dimension: 1_000_000,

@@ -16,6 +16,8 @@ mod limits;
 mod model;
 #[cfg(feature = "raster")]
 mod raster;
+#[cfg(feature = "sqlite")]
+mod vector;
 
 pub use container::{
     CHUNK_HEADER_SIZE, ChunkHeader, ChunkIter, ChunkKind, ClipFile, ExternalChunkHeader,
@@ -39,3 +41,5 @@ pub use raster::{
     DecodedTile, OffscreenAttributes, PixelFormat, PixelPacking, RasterDataState, RasterImage,
     RasterSource,
 };
+#[cfg(feature = "sqlite")]
+pub use vector::VectorDataSource;

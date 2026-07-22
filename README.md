@@ -24,11 +24,12 @@ Implemented:
 - optional, read-only SQLite access with runtime schema discovery; and
 - high-level project, canvas, layer, and validated layer-tree models; and
 - bounded `CanvasPreview` PNG extraction; and
+- bounded retrieval of opaque vector-layer external data; and
 - optional `Offscreen.Attribute`, zlib tile, and RGBA/grayscale raster decoding.
 
 Not implemented yet:
 
-- vector, text, animation, or `.cmc` support; and
+- semantic vector decoding, text, animation, or `.cmc` support; and
 - writing or modifying files.
 
 See [the format analysis](docs/format-analysis.md) and
@@ -91,6 +92,11 @@ validated `LayerTree`. Raw flags and numeric kinds remain available so newer
 format values are not discarded. `Database::canvas_preview` returns the
 encoded preview for a canvas after applying a size limit and cross-checking
 PNG IHDR dimensions when the stored bytes are PNG.
+
+`Database::vector_data_sources` resolves the `VectorObjectList` rows owned by
+a layer. `ClipFile::read_vector_data` then retrieves each opaque external body
+under configurable row-count and byte-size limits. The bytes are intentionally
+not interpreted until the vector-body structure is independently verified.
 
 The `raster` feature builds on `sqlite`. It resolves a layer render, layer
 mask, or mipmap to its base offscreen data, supports bounded tile-by-tile

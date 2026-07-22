@@ -240,6 +240,35 @@ impl<R: Read + Seek> ClipFile<R> {
         Ok(ExternalObject { header, body })
     }
 
+    /// Reads an external object's complete body after enforcing an allocation limit.
+    pub fn read_external_body(&mut self, object: &ExternalObject, limit: u64) -> Result<Vec<u8>> {
+        let size = object.header.body_size();
+        if size > limit {
+            return Err(Error::PayloadTooLarge { size, limit });
+        }
+        read_range(
+            &mut self.reader,
+            self.file_size,
+            object.header.body_offset(),
+            size,
+        )
+    }
+
+    /// Streams an external object's complete body into a writer.
+    pub fn copy_external_body<W: Write>(
+        &mut self,
+        object: &ExternalObject,
+        writer: &mut W,
+    ) -> Result<u64> {
+        copy_range(
+            &mut self.reader,
+            self.file_size,
+            object.header.body_offset(),
+            object.header.body_size(),
+            writer,
+        )
+    }
+
     /// Indexes a block-data body without reading compressed tile contents.
     pub fn read_block_data(&mut self, object: &ExternalObject) -> Result<BlockData> {
         if object.body != ExternalBody::BlockData {

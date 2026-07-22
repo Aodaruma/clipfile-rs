@@ -282,7 +282,7 @@ impl<R: Read + Seek> ClipFile<R> {
         }
     }
 
-    #[cfg(feature = "raster")]
+    #[cfg(feature = "sqlite")]
     pub(crate) fn chunk_at_offset(&mut self, offset: u64) -> Result<ChunkHeader> {
         read_chunk_header(&mut self.reader, offset, self.file_size)
     }
