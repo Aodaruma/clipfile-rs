@@ -23,6 +23,7 @@ Implemented:
 - block indexing without loading compressed tile payloads;
 - optional, read-only SQLite access with runtime schema discovery; and
 - high-level project, canvas, layer, and validated layer-tree models; and
+- bounded `CanvasPreview` PNG extraction; and
 - optional `Offscreen.Attribute`, zlib tile, and RGBA/grayscale raster decoding.
 
 Not implemented yet:
@@ -87,7 +88,9 @@ the `ExternalChunk` index.
 With the same feature, `ClipFile::read_document` builds a `Document` with
 project/canvas metadata, core layer properties, mipmap references, and a
 validated `LayerTree`. Raw flags and numeric kinds remain available so newer
-format values are not discarded.
+format values are not discarded. `Database::canvas_preview` returns the
+encoded preview for a canvas after applying a size limit and cross-checking
+PNG IHDR dimensions when the stored bytes are PNG.
 
 The `raster` feature builds on `sqlite`. It resolves a layer render, layer
 mask, or mipmap to its base offscreen data, supports bounded tile-by-tile

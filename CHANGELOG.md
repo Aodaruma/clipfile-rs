@@ -10,6 +10,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### Added
 
 - Direct resolution of a layer-mask raster source through `Database::layer_mask_raster_source`.
+- Bounded `CanvasPreview` extraction with PNG IHDR dimension validation.
 
 ### Documentation
 

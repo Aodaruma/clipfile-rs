@@ -33,7 +33,7 @@ pub use external::{
 };
 pub use limits::Limits;
 #[cfg(feature = "sqlite")]
-pub use model::{BlendMode, Canvas, Document, Layer, LayerKind, LayerTree, Project};
+pub use model::{BlendMode, Canvas, CanvasPreview, Document, Layer, LayerKind, LayerTree, Project};
 #[cfg(feature = "raster")]
 pub use raster::{
     DecodedTile, OffscreenAttributes, PixelFormat, PixelPacking, RasterDataState, RasterImage,

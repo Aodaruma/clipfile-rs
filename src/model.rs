@@ -3,9 +3,11 @@ use std::{
     io::{Read, Seek},
 };
 
-use rusqlite::{OptionalExtension, Row};
+use rusqlite::{OptionalExtension, Row, params};
 
 use crate::{ClipFile, Database, Error, Limits, Result};
+
+const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 
 /// Document-level settings from the single `Project` row.
 #[derive(Clone, Debug, PartialEq)]
@@ -88,6 +90,127 @@ impl Canvas {
     #[must_use]
     pub const fn current_layer_id(&self) -> Option<i64> {
         self.current_layer_id
+    }
+}
+
+/// Encoded preview image stored in the `CanvasPreview` table.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CanvasPreview {
+    id: i64,
+    canvas_id: i64,
+    image_type: i64,
+    width: u32,
+    height: u32,
+    data: Box<[u8]>,
+}
+
+impl CanvasPreview {
+    /// Stable SQLite `MainId` within the document.
+    #[must_use]
+    pub const fn id(&self) -> i64 {
+        self.id
+    }
+
+    /// Canvas to which this preview belongs.
+    #[must_use]
+    pub const fn canvas_id(&self) -> i64 {
+        self.canvas_id
+    }
+
+    /// Original, forward-compatible `ImageType` value.
+    #[must_use]
+    pub const fn image_type(&self) -> i64 {
+        self.image_type
+    }
+
+    /// Preview width declared by SQLite and cross-checked with the PNG header.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Preview height declared by SQLite and cross-checked with the PNG header.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Encoded image bytes. Observed CLIP files store PNG data.
+    #[must_use]
+    pub const fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// Whether the encoded bytes begin with the PNG signature.
+    #[must_use]
+    pub fn is_png(&self) -> bool {
+        self.data.starts_with(PNG_SIGNATURE)
+    }
+
+    /// Takes ownership of the encoded image bytes.
+    #[must_use]
+    pub fn into_data(self) -> Box<[u8]> {
+        self.data
+    }
+}
+
+impl Database {
+    /// Loads the encoded preview for one canvas under the configured size limit.
+    pub fn canvas_preview(&self, canvas_id: i64, limits: Limits) -> Result<Option<CanvasPreview>> {
+        for column in [
+            "MainId",
+            "CanvasId",
+            "ImageType",
+            "ImageWidth",
+            "ImageHeight",
+            "ImageData",
+        ] {
+            self.require_column("CanvasPreview", column)?;
+        }
+        let raw = self
+            .connection()
+            .query_row(
+                "SELECT MainId, CanvasId, ImageType, ImageWidth, ImageHeight, ImageData \
+                 FROM CanvasPreview WHERE CanvasId = ?1 ORDER BY MainId LIMIT 1",
+                params![canvas_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, Vec<u8>>(5)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((id, canvas_id, image_type, width, height, data)) = raw else {
+            return Ok(None);
+        };
+        let width = validate_preview_dimension("width", width, limits.max_canvas_dimension())?;
+        let height = validate_preview_dimension("height", height, limits.max_canvas_dimension())?;
+        let data_size = u64::try_from(data.len()).map_err(|_| Error::LimitExceeded {
+            resource: "canvas preview bytes",
+            value: u64::MAX,
+            limit: limits.max_preview_bytes(),
+        })?;
+        if data_size > limits.max_preview_bytes() {
+            return Err(Error::LimitExceeded {
+                resource: "canvas preview bytes",
+                value: data_size,
+                limit: limits.max_preview_bytes(),
+            });
+        }
+        validate_png_preview(&data, width, height)?;
+        Ok(Some(CanvasPreview {
+            id,
+            canvas_id,
+            image_type,
+            width,
+            height,
+            data: data.into_boxed_slice(),
+        }))
     }
 }
 
@@ -659,6 +782,39 @@ fn validate_canvas_dimension(name: &str, value: f64, limit: u32) -> Result<()> {
     Ok(())
 }
 
+fn validate_preview_dimension(name: &str, value: i64, limit: u32) -> Result<u32> {
+    let value = u32::try_from(value).map_err(|_| Error::InvalidDocument {
+        reason: format!("CanvasPreview {name} {value} is not a positive 32-bit value"),
+    })?;
+    if value == 0 || value > limit {
+        return invalid_document(format!(
+            "CanvasPreview {name} {value} is outside the supported range 1..={limit}"
+        ));
+    }
+    Ok(value)
+}
+
+fn validate_png_preview(data: &[u8], width: u32, height: u32) -> Result<()> {
+    if !data.starts_with(PNG_SIGNATURE) {
+        return Ok(());
+    }
+    if data.len() < 24 {
+        return invalid_document("CanvasPreview PNG header is truncated".to_owned());
+    }
+    let ihdr_size = u32::from_be_bytes(data[8..12].try_into().unwrap());
+    if ihdr_size != 13 || &data[12..16] != b"IHDR" {
+        return invalid_document("CanvasPreview PNG does not begin with IHDR".to_owned());
+    }
+    let png_width = u32::from_be_bytes(data[16..20].try_into().unwrap());
+    let png_height = u32::from_be_bytes(data[20..24].try_into().unwrap());
+    if (png_width, png_height) != (width, height) {
+        return invalid_document(format!(
+            "CanvasPreview dimensions {width}x{height} do not match PNG IHDR {png_width}x{png_height}"
+        ));
+    }
+    Ok(())
+}
+
 fn normalize_id(value: Option<i64>) -> Option<i64> {
     value.filter(|value| *value != 0)
 }
@@ -698,7 +854,15 @@ mod tests {
                  INSERT INTO Layer VALUES (2,10,'paint',1,128,2,0,0,0,0,1,3,0,20,0);
                  INSERT INTO Layer VALUES (3,10,'folder',0,256,0,0,0,0,17,1,0,4,0,0);
                  INSERT INTO Layer VALUES (4,10,'child',1,256,0,0,0,0,0,0,0,0,21,22);
-                 INSERT INTO Layer VALUES (5,10,'stale',1,256,0,0,0,0,0,1,0,0,0,0);",
+                 INSERT INTO Layer VALUES (5,10,'stale',1,256,0,0,0,0,0,1,0,0,0,0);
+                 CREATE TABLE CanvasPreview (
+                    MainId INTEGER, CanvasId INTEGER, ImageType INTEGER,
+                    ImageWidth INTEGER, ImageHeight INTEGER, ImageData BLOB
+                 );
+                 INSERT INTO CanvasPreview VALUES (
+                    30, 10, 1, 640, 480,
+                    X'89504E470D0A1A0A0000000D4948445200000280000001E0'
+                 );",
             )
             .unwrap();
         Database::from_connection(connection).unwrap()
@@ -728,6 +892,49 @@ mod tests {
             .unwrap();
         assert!(matches!(
             Document::load(&database, Limits::default()),
+            Err(Error::InvalidDocument { .. })
+        ));
+    }
+
+    #[test]
+    fn reads_and_validates_canvas_preview_png() {
+        let preview = database()
+            .canvas_preview(10, Limits::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(preview.id(), 30);
+        assert_eq!(preview.canvas_id(), 10);
+        assert_eq!(preview.image_type(), 1);
+        assert_eq!((preview.width(), preview.height()), (640, 480));
+        assert!(preview.is_png());
+        assert_eq!(preview.data().len(), 24);
+        assert!(
+            database()
+                .canvas_preview(999, Limits::default())
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_or_oversized_canvas_preview() {
+        assert!(matches!(
+            database().canvas_preview(10, Limits::default().with_max_preview_bytes(8)),
+            Err(Error::LimitExceeded {
+                resource: "canvas preview bytes",
+                ..
+            })
+        ));
+        let database = database();
+        database
+            .connection()
+            .execute(
+                "UPDATE CanvasPreview SET ImageWidth = 320 WHERE CanvasId = 10",
+                [],
+            )
+            .unwrap();
+        assert!(matches!(
+            database.canvas_preview(10, Limits::default()),
             Err(Error::InvalidDocument { .. })
         ));
     }

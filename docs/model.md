@@ -6,6 +6,7 @@
 
 - `Project`: 内部形式version、任意の作品名、主キャンバスID
 - `Canvas`: ID、単位、幅・高さ、解像度、ルート・現在レイヤーID
+- `CanvasPreview`: キャンバスID、形式値、寸法、エンコード済みプレビュー
 - `Layer`: 名前、種類、合成、可視性、不透明度、ロック、クリッピング、マスク、兄弟・子・Mipmap参照
 - `LayerTree`: ルートから再構成した子IDの順序と、到達不能なレイヤーID
 - `Document`: 上記の所有とID検索
@@ -23,6 +24,8 @@
 - キャンバスのルート・現在レイヤー参照
 - 子・兄弟参照の存在、循環、複数親
 - 不透明度の0～256範囲と、正の有限な解像度
+
+`Database::canvas_preview(canvas_id, limits)` は、指定キャンバスのプレビュー1件を読み取る。1件のエンコード済みサイズは `Limits::max_preview_bytes` で制限し、PNGシグネチャがある場合はSQLiteの幅・高さと先頭IHDRを照合する。未知の `ImageType` と非PNGデータは推測で捨てず、生の形式値・バイト列として返す。
 
 ルートから到達できないレイヤー行は、履歴・削除状態などの可能性を推測して破棄せず、`LayerTree::unreachable_layer_ids()` に残す。
 
