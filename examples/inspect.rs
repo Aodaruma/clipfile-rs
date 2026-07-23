@@ -129,8 +129,18 @@ fn inspect_animation_if_requested<R: std::io::Read + std::io::Seek>(
                 .flat_map(|track| track.curves())
                 .map(|curve| curve.keyframes().len())
                 .sum::<usize>();
+            let values = animation
+                .animation_tracks()
+                .iter()
+                .map(|track| track.values().len())
+                .sum::<usize>();
+            let secondary_mixers = animation
+                .animation_tracks()
+                .iter()
+                .filter(|track| track.secondary_action_mixer_present())
+                .count();
             println!(
-                "animation: timeline {}, {} fps, frames {}..={}, {} tracks, {} curves / {} keys, {} cel tracks / {} selected keys",
+                "animation: timeline {}, {} fps, frames {}..={}, {} tracks, {} curves / {} keys, {} values, {} secondary mixers, {} cel tracks / {} selected keys",
                 animation.timeline().id(),
                 animation.timeline().frame_rate(),
                 animation.timeline().start_frame(),
@@ -138,6 +148,8 @@ fn inspect_animation_if_requested<R: std::io::Read + std::io::Seek>(
                 animation.animation_tracks().len(),
                 curves,
                 curve_keys,
+                values,
+                secondary_mixers,
                 animation.tracks().len(),
                 keyframes,
             );

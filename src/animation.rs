@@ -225,13 +225,61 @@ impl AnimationCurve {
     }
 }
 
-/// One timeline track and every validated curve in its primary action mixer.
+/// One typed current/default value stored in `TrackValueMap`.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum AnimationTrackValue {
+    /// Type `0`: an IEEE 754 double-precision value.
+    Float(f64),
+    /// Type `2`: a UTF-16 text value paired with its numeric curve value.
+    IndexedText {
+        /// Text value, such as an image-cel name.
+        text: String,
+        /// Numeric value paired with the text in the corresponding curve.
+        numeric_value: u32,
+    },
+    /// A structurally valid value type that this crate does not yet interpret.
+    Unknown {
+        /// Raw type discriminator.
+        kind: u32,
+        /// UTF-16 text field stored before the type discriminator.
+        text: String,
+        /// Remaining big-endian payload bytes.
+        payload: Box<[u8]>,
+    },
+}
+
+/// One named entry decoded from a track's inline `TrackValueMap`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnimationTrackValueEntry {
+    name: String,
+    value: AnimationTrackValue,
+}
+
+impl AnimationTrackValueEntry {
+    /// Parameter name, such as `ImageCelName`, `PlayTime`, or `AudioVolume`.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Typed current/default value for the parameter.
+    #[must_use]
+    pub const fn value(&self) -> &AnimationTrackValue {
+        &self.value
+    }
+}
+
+/// One timeline track, its primary curves, and its inline value map.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnimationTrack {
     id: i64,
     kind: AnimationTrackKind,
     layer_id: Option<i64>,
     action_mixer_present: bool,
+    secondary_action_mixer_present: bool,
+    value_map_present: bool,
+    values: Vec<AnimationTrackValueEntry>,
     curves: Vec<AnimationCurve>,
 }
 
@@ -258,6 +306,26 @@ impl AnimationTrack {
     #[must_use]
     pub const fn action_mixer_present(&self) -> bool {
         self.action_mixer_present
+    }
+
+    /// Whether `TrackActionMixer2` contains an external-object identifier.
+    ///
+    /// The secondary `0110binc` value stream is not decoded yet.
+    #[must_use]
+    pub const fn secondary_action_mixer_present(&self) -> bool {
+        self.secondary_action_mixer_present
+    }
+
+    /// Whether the schema provided a non-NULL inline `TrackValueMap`.
+    #[must_use]
+    pub const fn value_map_present(&self) -> bool {
+        self.value_map_present
+    }
+
+    /// Every validated entry from the inline `TrackValueMap`.
+    #[must_use]
+    pub fn values(&self) -> &[AnimationTrackValueEntry] {
+        &self.values
     }
 
     /// Every validated `FCurve` in the primary action mixer.
@@ -458,6 +526,8 @@ impl<R: Read + Seek> ClipFile<R> {
         let mut tracks = Vec::new();
         let mut animation_tracks = Vec::new();
         let mut total_curve_keys = 0_u64;
+        let mut total_value_items = 0_u64;
+        let mut total_value_bytes = 0_u64;
         for source in sources {
             let layer_id = match source.layer_uuid {
                 Some(uuid) => Some(layers.get(&uuid).copied().ok_or_else(|| {
@@ -507,6 +577,28 @@ impl<R: Read + Seek> ClipFile<R> {
             } else {
                 Vec::new()
             };
+            let values = if let Some(value_map) = source.value_map.as_deref() {
+                total_value_bytes = total_value_bytes
+                    .checked_add(value_map.len() as u64)
+                    .ok_or(Error::OffsetOverflow)?;
+                enforce_byte_limit(
+                    total_value_bytes,
+                    limits.max_animation_bytes(),
+                    "animation track value maps",
+                )?;
+                let values = parse_track_value_map(value_map, limits)?;
+                total_value_items = total_value_items
+                    .checked_add(values.len() as u64)
+                    .ok_or(Error::OffsetOverflow)?;
+                enforce_item_limit(
+                    total_value_items,
+                    limits.max_animation_items(),
+                    "animation track values",
+                )?;
+                values
+            } else {
+                Vec::new()
+            };
             let kind = AnimationTrackKind::new(source.kind);
             if kind.is_image_cel() {
                 let layer_id = layer_id.ok_or_else(|| {
@@ -548,6 +640,9 @@ impl<R: Read + Seek> ClipFile<R> {
                 kind,
                 layer_id,
                 action_mixer_present: source.external_identifier.is_some(),
+                secondary_action_mixer_present: source.secondary_external_identifier.is_some(),
+                value_map_present: source.value_map.is_some(),
+                values,
                 curves,
             });
         }
@@ -572,6 +667,8 @@ struct AnimationTrackSource {
     id: i64,
     kind: i64,
     external_identifier: Option<Box<[u8]>>,
+    secondary_external_identifier: Option<Box<[u8]>>,
+    value_map: Option<Box<[u8]>>,
     layer_uuid: Option<[u8; 16]>,
 }
 
@@ -616,10 +713,20 @@ fn animation_track_sources(
     ] {
         database.require_column("Track", column)?;
     }
-    let mut statement = database.connection().prepare(
-        "SELECT MainId, TrackKind, TrackActionMixer, LayerUuidWithTrack FROM Track \
+    let optional = |column: &'static str| {
+        if database.schema().has_column("Track", column) {
+            column
+        } else {
+            "NULL"
+        }
+    };
+    let sql = format!(
+        "SELECT MainId, TrackKind, TrackActionMixer, LayerUuidWithTrack, {}, {} FROM Track \
          WHERE BankId = ?1 ORDER BY MainId",
-    )?;
+        optional("TrackActionMixer2"),
+        optional("TrackValueMap"),
+    );
+    let mut statement = database.connection().prepare(&sql)?;
     let mut rows = statement.query(params![timeline.bank_id])?;
     let mut sources = Vec::new();
     while let Some(row) = rows.next()? {
@@ -636,6 +743,22 @@ fn animation_track_sources(
                 "animation external identifier",
             )?;
         }
+        let secondary = optional_bytes(row.get_ref(4)?, 4, "TrackActionMixer2")?;
+        if let Some(value) = secondary {
+            enforce_byte_limit(
+                value.len() as u64,
+                limits.max_identifier_size(),
+                "secondary animation external identifier",
+            )?;
+        }
+        let value_map = optional_bytes(row.get_ref(5)?, 5, "TrackValueMap")?;
+        if let Some(value) = value_map {
+            enforce_byte_limit(
+                value.len() as u64,
+                limits.max_animation_bytes(),
+                "animation track value map",
+            )?;
+        }
         let uuid = optional_bytes(row.get_ref(3)?, 3, "LayerUuidWithTrack")?;
         if let Some(value) = uuid {
             enforce_byte_limit(
@@ -648,6 +771,8 @@ fn animation_track_sources(
             id: row.get(0)?,
             kind: row.get(1)?,
             external_identifier: external.map(Box::from),
+            secondary_external_identifier: secondary.map(Box::from),
+            value_map: value_map.map(Box::from),
             layer_uuid: uuid.map(normalize_uuid).transpose()?,
         });
     }
@@ -757,6 +882,118 @@ fn parse_image_cel_curve(bytes: &[u8], limits: Limits) -> Result<Option<Vec<CelK
         })
         .collect::<Result<Vec<_>>>()
         .map(Some)
+}
+
+fn parse_track_value_map(bytes: &[u8], limits: Limits) -> Result<Vec<AnimationTrackValueEntry>> {
+    enforce_byte_limit(
+        bytes.len() as u64,
+        limits.max_animation_bytes(),
+        "animation track value map",
+    )?;
+    let mut cursor = 0;
+    let header_size = read_be_u32(bytes, &mut cursor)?;
+    if header_size != 8 {
+        return Err(animation_error(format!(
+            "TrackValueMap header size is {header_size} instead of 8"
+        )));
+    }
+    let count = read_be_u32(bytes, &mut cursor)?;
+    enforce_item_limit(
+        u64::from(count),
+        limits.max_animation_items(),
+        "animation track values",
+    )?;
+    let mut entries = Vec::new();
+    entries
+        .try_reserve_exact(count as usize)
+        .map_err(|_| Error::LimitExceeded {
+            resource: "animation track value allocation",
+            value: u64::from(count),
+            limit: limits.max_animation_items(),
+        })?;
+    for _ in 0..count {
+        let record_start = cursor;
+        let record_size = read_be_u32(bytes, &mut cursor)? as usize;
+        let record_end = record_start
+            .checked_add(record_size)
+            .ok_or(Error::OffsetOverflow)?;
+        if record_end > bytes.len() {
+            return Err(animation_error(
+                "TrackValueMap record exceeds the inline value map",
+            ));
+        }
+        let name = read_utf16be_value(bytes, &mut cursor, record_end)?;
+        let text = read_utf16be_value(bytes, &mut cursor, record_end)?;
+        let kind = read_be_u32_bounded(bytes, &mut cursor, record_end)?;
+        let payload = bytes
+            .get(cursor..record_end)
+            .ok_or_else(|| animation_error("TrackValueMap record fields exceed its size"))?;
+        let value = match (kind, payload) {
+            (0, [a, b, c, d, e, f, g, h]) if text.is_empty() => {
+                let value = f64::from_bits(u64::from_be_bytes([*a, *b, *c, *d, *e, *f, *g, *h]));
+                if !value.is_finite() {
+                    return Err(animation_error(
+                        "TrackValueMap contains a non-finite floating-point value",
+                    ));
+                }
+                AnimationTrackValue::Float(value)
+            }
+            (2, [a, b, c, d]) => AnimationTrackValue::IndexedText {
+                text,
+                numeric_value: u32::from_be_bytes([*a, *b, *c, *d]),
+            },
+            _ => AnimationTrackValue::Unknown {
+                kind,
+                text,
+                payload: Box::from(payload),
+            },
+        };
+        cursor = record_end;
+        entries.push(AnimationTrackValueEntry { name, value });
+    }
+    if cursor != bytes.len() {
+        return Err(animation_error(
+            "TrackValueMap has trailing bytes after its records",
+        ));
+    }
+    Ok(entries)
+}
+
+fn read_utf16be_value(bytes: &[u8], cursor: &mut usize, limit: usize) -> Result<String> {
+    let count = read_be_u32_bounded(bytes, cursor, limit)? as usize;
+    let byte_count = count.checked_mul(2).ok_or(Error::OffsetOverflow)?;
+    let end = cursor
+        .checked_add(byte_count)
+        .ok_or(Error::OffsetOverflow)?;
+    let encoded = bytes
+        .get(*cursor..end)
+        .filter(|_| end <= limit)
+        .ok_or_else(|| animation_error("truncated UTF-16BE TrackValueMap string"))?;
+    let units = encoded
+        .chunks_exact(2)
+        .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]));
+    let value = char::decode_utf16(units)
+        .collect::<std::result::Result<String, _>>()
+        .map_err(|_| animation_error("TrackValueMap string is invalid UTF-16BE"))?;
+    *cursor = end;
+    Ok(value)
+}
+
+fn read_be_u32_bounded(bytes: &[u8], cursor: &mut usize, limit: usize) -> Result<u32> {
+    let end = cursor.checked_add(4).ok_or(Error::OffsetOverflow)?;
+    if end > limit {
+        return Err(animation_error("truncated TrackValueMap record"));
+    }
+    read_be_u32(bytes, cursor)
+}
+
+fn read_be_u32(bytes: &[u8], cursor: &mut usize) -> Result<u32> {
+    let end = cursor.checked_add(4).ok_or(Error::OffsetOverflow)?;
+    let value = bytes
+        .get(*cursor..end)
+        .ok_or_else(|| animation_error("truncated big-endian animation integer"))?;
+    *cursor = end;
+    Ok(u32::from_be_bytes(value.try_into().expect("four bytes")))
 }
 
 fn parse_animation_curves(bytes: &[u8], limits: Limits) -> Result<Vec<AnimationCurve>> {
@@ -1145,6 +1382,37 @@ mod tests {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
 
+    fn push_be_u32(bytes: &mut Vec<u8>, value: u32) {
+        bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn push_utf16be(bytes: &mut Vec<u8>, value: &str) {
+        let encoded = value.encode_utf16().collect::<Vec<_>>();
+        push_be_u32(bytes, encoded.len() as u32);
+        for unit in encoded {
+            bytes.extend_from_slice(&unit.to_be_bytes());
+        }
+    }
+
+    fn push_value_record(bytes: &mut Vec<u8>, name: &str, text: &str, kind: u32, payload: &[u8]) {
+        let start = bytes.len();
+        push_be_u32(bytes, 0);
+        push_utf16be(bytes, name);
+        push_utf16be(bytes, text);
+        push_be_u32(bytes, kind);
+        bytes.extend_from_slice(payload);
+        let size = u32::try_from(bytes.len() - start).unwrap();
+        bytes[start..start + 4].copy_from_slice(&size.to_be_bytes());
+    }
+
+    fn track_value_map() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        push_be_u32(&mut bytes, 8);
+        push_be_u32(&mut bytes, 1);
+        push_value_record(&mut bytes, "ImageCelName", "A", 2, &0_u32.to_be_bytes());
+        bytes
+    }
+
     fn binc() -> Vec<u8> {
         let strings = [
             "FCurve",
@@ -1273,7 +1541,8 @@ mod tests {
                  INSERT INTO AnimationCutBank VALUES (1, 1, 1);
                  CREATE TABLE Track (
                     MainId INTEGER, BankId INTEGER, TrackKind INTEGER,
-                    TrackActionMixer BLOB, LayerUuidWithTrack BLOB
+                    TrackActionMixer BLOB, LayerUuidWithTrack BLOB,
+                    TrackActionMixer2 BLOB, TrackValueMap BLOB
                  );
                  CREATE TABLE Layer (MainId INTEGER, LayerUuid TEXT);
                  INSERT INTO Layer VALUES (5, '11111111-1111-1111-1111-111111111111');
@@ -1282,8 +1551,8 @@ mod tests {
             .unwrap();
         connection
             .execute(
-                "INSERT INTO Track VALUES (1, 2, 2000, ?1, ?2)",
-                params![IDENTIFIER, LAYER_UUID],
+                "INSERT INTO Track VALUES (1, 2, 2000, ?1, ?2, ?1, ?3)",
+                params![IDENTIFIER, LAYER_UUID, track_value_map()],
             )
             .unwrap();
         connection
@@ -1323,6 +1592,17 @@ mod tests {
         assert_eq!(raw_track.curves().len(), 1);
         assert_eq!(raw_track.curves()[0].kind(), "ImageCelName");
         assert_eq!(raw_track.curves()[0].keyframes().len(), 2);
+        assert!(raw_track.secondary_action_mixer_present());
+        assert!(raw_track.value_map_present());
+        assert_eq!(raw_track.values().len(), 1);
+        assert_eq!(raw_track.values()[0].name(), "ImageCelName");
+        assert_eq!(
+            raw_track.values()[0].value(),
+            &AnimationTrackValue::IndexedText {
+                text: "A".to_owned(),
+                numeric_value: 0,
+            }
+        );
         assert_eq!(raw_track.curves()[0].keyframes()[0].tag(), Some("A"));
         assert_eq!(
             raw_track.curves()[0].keyframes()[0].interpolation(),
@@ -1360,6 +1640,64 @@ mod tests {
         let database = Database::from_connection(connection).unwrap();
         assert!(matches!(
             database.timelines(Limits::default().with_max_animation_items(0)),
+            Err(Error::LimitExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn parses_typed_and_unknown_track_values() {
+        let mut bytes = Vec::new();
+        push_be_u32(&mut bytes, 8);
+        push_be_u32(&mut bytes, 3);
+        push_value_record(
+            &mut bytes,
+            "PlayTime",
+            "",
+            0,
+            &2.5_f64.to_bits().to_be_bytes(),
+        );
+        push_value_record(&mut bytes, "ImageCelName", "A", 2, &7_u32.to_be_bytes());
+        push_value_record(&mut bytes, "FutureValue", "opaque", 99, &[1, 2, 3]);
+
+        let entries = parse_track_value_map(&bytes, Limits::default()).unwrap();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].value(), &AnimationTrackValue::Float(2.5));
+        assert_eq!(
+            entries[1].value(),
+            &AnimationTrackValue::IndexedText {
+                text: "A".to_owned(),
+                numeric_value: 7,
+            }
+        );
+        assert_eq!(
+            entries[2].value(),
+            &AnimationTrackValue::Unknown {
+                kind: 99,
+                text: "opaque".to_owned(),
+                payload: Box::from([1, 2, 3]),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_track_value_maps() {
+        assert!(matches!(
+            parse_track_value_map(&[0; 8], Limits::default()),
+            Err(Error::InvalidAnimation { .. })
+        ));
+
+        let mut truncated = track_value_map();
+        truncated.pop();
+        assert!(matches!(
+            parse_track_value_map(&truncated, Limits::default()),
+            Err(Error::InvalidAnimation { .. })
+        ));
+
+        assert!(matches!(
+            parse_track_value_map(
+                &track_value_map(),
+                Limits::default().with_max_animation_items(0)
+            ),
             Err(Error::LimitExceeded { .. })
         ));
     }

@@ -27,7 +27,7 @@ Implemented:
 - bounded retrieval of opaque vector-layer external data; and
 - bounded UTF-8 text-layer content with opaque per-object attributes; and
 - optional timeline, generic primary action-mixer curves, image-cel selection,
-  and audio/play-time curve decoding; and
+  audio/play-time curve decoding, and typed inline track values; and
 - optional validated time-lapse manager/record/blob chains with bounded reads
   and streaming decompression; and
 - optional `Offscreen.Attribute`, zlib tile, and RGBA/grayscale raster decoding.
@@ -118,8 +118,11 @@ arrays, and exposes every `FCurve` in the primary action mixer, including
 interpolation, slopes, optional tags, and constant-revision flags. The existing
 `CelTrack` view selects the first `ImageCelName` curve for convenient frame
 lookup, while `AnimationTrack` preserves raw track kinds and all curves,
-including observed `PlayTime` and `AudioPlayer` data. Secondary mixers and
-track value maps remain opaque.
+including observed `PlayTime` and `AudioPlayer` data. It also validates the
+inline `TrackValueMap` and exposes observed floating-point and indexed-text
+values while preserving future value types as opaque payloads. The presence
+of a secondary mixer is reported, but its `0110binc` value stream is not
+decoded yet.
 
 The `timelapse` feature validates `TimeLapseManager`, `TimeLapseRecord`, and
 `TimeLapseBlob` linked lists, including canvas ownership, contiguous decoded

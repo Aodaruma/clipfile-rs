@@ -201,6 +201,8 @@ BINC文字列表を用いて `FCurve` を列挙すると、`Frame` / `Value` に
 
 `LayerUuidWithTrack` の16-byte値は `Layer.LayerUuid` のテキスト表現と正規化後に一致し、全291トラックを対象レイヤーへ一意に対応できた。`TrackKind=4000` の4行には `PlayTime` 4曲線・8キー、`TrackKind=4001` の4行には `AudioPlayer` と `PlayTime` 合計10曲線・15キーがあった。`4001` は `Layer.AudioLayer=1` および `AudioVolume` トークンを持つため、音声制御トラックと確認できる。汎用公開APIはprimary `TrackActionMixer` の合計270曲線・12,347キーを読み、既存のセル選択ビューと検証用exporterも5件すべてで一致した。本文にはタイムライン名、セルタグ、音声名、レイヤー名、ファイル別の対応を記録しない。
 
+inline `TrackValueMap` は全291行で境界まで一致した。先頭はbig-endianの固定長8とentry数で、各entryは自身を含むbig-endian record長、UTF-16BEのparameter名と文字列値、type判別値、payloadを持つ。type 0は8-byte IEEE 754倍精度、type 2は4-byte整数だった。`2000` の191行には各1件の `ImageCelName` があり、整数値は対応FCurveの値と191/191で一致した。`4000` の4行は `PlayTime`、`4001` の4行は各 `PlayTime` / `AudioPlayer` / `AudioVolume` を持つ。公開APIは確認済み2型を型付きで返し、未知typeのpayloadも保持する。`TrackActionMixer2` は全行に外部IDがあり、cel・play-time・audio行では `0110binc` の型schemaと値領域が分離していることまで確認したが、値ストリームの意味はまだ固定しない。
+
 ## タイムラプス
 
 既存コーパスの2件に `TimeLapseManager`、`TimeLapseRecord`、`TimeLapseBlob` が存在した。各managerはcanvasごとのrecord連結リスト、各recordはblob連結リストの先頭IDを持つ。2件ともmanager 1件・record 1件で、blobは合計9件だった。全blobで `BlobType=2`、`BlobData` は40-byte外部ID、外部本体はbig-endianの4-byte圧縮長を持つzlibだった。
@@ -212,7 +214,7 @@ blobの `BlobOffset` はrecord内で0から隙間なく連続し、`BlobSizeComp
 - `BlockStatus` 値の意味とチェックサムアルゴリズム
 - 1-bit、異なるタイル寸法・追加チャンネル配置
 - ベクター本体、テキスト属性、3D、定規、特殊レイヤーの完全な意味
-- secondary animation mixer、track value map、タイムラプス内部フレーム索引の完全な意味
+- secondary animation mixer、タイムラプス内部フレーム索引の完全な意味
 - `.cmc` の外側構造と複数ページ参照
 - DBから参照されるが `ExternalChunk` に存在しない外部IDの意味
 - アプリケーションのバージョン間での完全なスキーマ移行規則
