@@ -3,13 +3,15 @@
 ## 現在の構成
 
 - crate名: `clipfile`
-- version: `0.1.0`
+- version: `0.2.0`
 - edition: Rust 2024
 - MSRV: Rust 1.85
 - license: MIT
 - 既定featureの依存: なし
 - `sqlite` feature: `rusqlite` と同梱SQLite（システムのSQLite開発環境は不要）
 - `raster` feature: `sqlite` + pure-Rust zlib展開
+- `animation` feature: `sqlite` + BINCタイムライン曲線
+- `timelapse` feature: `sqlite` + zlibタイムラプスBLOB
 
 CIはLinux、Windows、macOSのstableとLinuxのMSRVでテストし、fmt、Clippy、rustdoc、`cargo package` も検証する。DependabotはCargo依存とGitHub Actionsを週次確認する。
 

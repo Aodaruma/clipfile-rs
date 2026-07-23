@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-23
+
 ### Added
 
 - Direct resolution of a layer-mask raster source through `Database::layer_mask_raster_source`.
@@ -43,5 +45,6 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Optional offscreen metadata parsing, bounded zlib tile decoding, and raster assembly.
 - Project, canvas, layer, and cycle-checked layer-tree models.
 
-[Unreleased]: https://github.com/Aodaruma/clipfile-rs/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Aodaruma/clipfile-rs/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Aodaruma/clipfile-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Aodaruma/clipfile-rs/releases/tag/v0.1.0
