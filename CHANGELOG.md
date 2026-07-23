@@ -16,6 +16,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   RIFF/WebP boundary, and observed VP8 dimension validation.
 - Validated animation `FirstTrack` / `TrackNextIndex` chains and helpers for
   observed folder, paper, play-time, and audio track kinds.
+- Sparse double-precision `FCurve` decoding for validated secondary
+  action-mixer value records.
 
 ## [0.2.0] - 2026-07-23
 

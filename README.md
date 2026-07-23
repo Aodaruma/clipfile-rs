@@ -26,16 +26,18 @@ Implemented:
 - bounded `CanvasPreview` PNG extraction; and
 - bounded retrieval of opaque vector-layer external data; and
 - bounded UTF-8 text-layer content with opaque per-object attributes; and
-- optional timeline, generic primary action-mixer curves, image-cel selection,
-  audio/play-time curve decoding, and typed inline track values; and
+- optional timeline, generic primary and double-precision secondary
+  action-mixer curves, image-cel selection, audio/play-time curve decoding,
+  and typed inline track values; and
 - optional validated time-lapse manager/record/blob chains with bounded reads
   and streaming decompression, plus streaming internal WebP frame indexing; and
 - optional `Offscreen.Attribute`, zlib tile, and RGBA/grayscale raster decoding.
 
 Not implemented yet:
 
-- semantic vector/text-attribute decoding, secondary animation mixers,
-  time-lapse playback/timestamp semantics, or `.cmc` support; and
+- semantic vector/text-attribute decoding, camera/transform semantics beyond
+  exposed animation curves, time-lapse playback/timestamp semantics, or `.cmc`
+  support; and
 - writing or modifying files.
 
 See [the format analysis](docs/format-analysis.md) and
@@ -121,10 +123,11 @@ interpolation, slopes, optional tags, and constant-revision flags. The existing
 lookup, while `AnimationTrack` preserves raw track kinds and all curves,
 including observed `PlayTime` and `AudioPlayer` data. It also validates the
 inline `TrackValueMap` and exposes observed floating-point and indexed-text
-values while preserving future value types as opaque payloads. The presence
-of a secondary mixer is reported, but its `0110binc` value stream is not
-decoded yet. Verified raw-kind helpers cover non-cel folders, image-cel
-folders, paper, play-time control, and audio control.
+values while preserving future value types as opaque payloads. Secondary
+`0110binc` value records are sparse, use independently validated field
+metadata, and preserve their `Double[]` frame, value, and slope arrays as
+`f64`. Verified raw-kind helpers cover non-cel folders, image-cel folders,
+paper, play-time control, and audio control.
 
 The `timelapse` feature validates `TimeLapseManager`, `TimeLapseRecord`, and
 `TimeLapseBlob` linked lists, including canvas ownership, contiguous decoded

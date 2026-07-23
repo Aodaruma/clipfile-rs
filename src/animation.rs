@@ -243,6 +243,86 @@ impl AnimationCurve {
     }
 }
 
+/// One validated double-precision key from a secondary animation `FCurve`.
+///
+/// Decoded `TrackActionMixer2` value records use the same logical fields as
+/// their primary counterparts but store numeric arrays as `Double[]`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SecondaryAnimationCurveKeyframe {
+    time_60hz: f64,
+    value: f64,
+    tag: Option<String>,
+    interpolation: Option<String>,
+    left_slope: Option<f64>,
+    right_slope: Option<f64>,
+    revise_constant: Option<u8>,
+}
+
+impl SecondaryAnimationCurveKeyframe {
+    /// Key time in the observed 60 Hz timebase.
+    #[must_use]
+    pub const fn time_60hz(&self) -> f64 {
+        self.time_60hz
+    }
+
+    /// Numeric curve value.
+    #[must_use]
+    pub const fn value(&self) -> f64 {
+        self.value
+    }
+
+    /// Optional string tag associated with the key.
+    #[must_use]
+    pub fn tag(&self) -> Option<&str> {
+        self.tag.as_deref()
+    }
+
+    /// Optional interpolation name as stored by CLIP STUDIO PAINT.
+    #[must_use]
+    pub fn interpolation(&self) -> Option<&str> {
+        self.interpolation.as_deref()
+    }
+
+    /// Optional incoming slope value.
+    #[must_use]
+    pub const fn left_slope(&self) -> Option<f64> {
+        self.left_slope
+    }
+
+    /// Optional outgoing slope value.
+    #[must_use]
+    pub const fn right_slope(&self) -> Option<f64> {
+        self.right_slope
+    }
+
+    /// Optional constant-interpolation revision flag.
+    #[must_use]
+    pub const fn revise_constant(&self) -> Option<u8> {
+        self.revise_constant
+    }
+}
+
+/// One named double-precision `FCurve` decoded from `TrackActionMixer2`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SecondaryAnimationCurve {
+    kind: String,
+    keyframes: Vec<SecondaryAnimationCurveKeyframe>,
+}
+
+impl SecondaryAnimationCurve {
+    /// Curve type, such as the observed `ImageCelName` or `AudioPlayer`.
+    #[must_use]
+    pub fn kind(&self) -> &str {
+        &self.kind
+    }
+
+    /// Sorted validated double-precision keys.
+    #[must_use]
+    pub fn keyframes(&self) -> &[SecondaryAnimationCurveKeyframe] {
+        &self.keyframes
+    }
+}
+
 /// One typed current/default value stored in `TrackValueMap`.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -300,6 +380,7 @@ pub struct AnimationTrack {
     value_map_present: bool,
     values: Vec<AnimationTrackValueEntry>,
     curves: Vec<AnimationCurve>,
+    secondary_curves: Vec<SecondaryAnimationCurve>,
 }
 
 impl AnimationTrack {
@@ -334,8 +415,6 @@ impl AnimationTrack {
     }
 
     /// Whether `TrackActionMixer2` contains an external-object identifier.
-    ///
-    /// The secondary `0110binc` value stream is not decoded yet.
     #[must_use]
     pub const fn secondary_action_mixer_present(&self) -> bool {
         self.secondary_action_mixer_present
@@ -357,6 +436,15 @@ impl AnimationTrack {
     #[must_use]
     pub fn curves(&self) -> &[AnimationCurve] {
         &self.curves
+    }
+
+    /// Every validated double-precision value `FCurve` in the secondary mixer.
+    ///
+    /// These records are sparse, so this can be empty even when
+    /// [`Self::secondary_action_mixer_present`] returns `true`.
+    #[must_use]
+    pub fn secondary_curves(&self) -> &[SecondaryAnimationCurve] {
+        &self.secondary_curves
     }
 }
 
@@ -602,6 +690,47 @@ impl<R: Read + Seek> ClipFile<R> {
             } else {
                 Vec::new()
             };
+            let secondary_curves = if let Some(identifier) =
+                source.secondary_external_identifier.as_deref()
+            {
+                let object = self
+                    .resolve_external_object(database, identifier)?
+                    .ok_or_else(|| {
+                        animation_error(format!(
+                            "animation track {} references missing secondary mixer data",
+                            source.id
+                        ))
+                    })?;
+                let ExternalBody::LengthPrefixedZlib(stream) = object.body() else {
+                    return Err(animation_error(format!(
+                        "animation track {} secondary mixer is not a length-prefixed zlib stream",
+                        source.id
+                    )));
+                };
+                if stream.byte_order() != ByteOrder::LittleEndian {
+                    return Err(animation_error(format!(
+                        "animation track {} secondary mixer uses an unexpected length byte order",
+                        source.id
+                    )));
+                }
+                let compressed =
+                    self.read_length_prefixed_zlib(stream, limits.max_animation_bytes())?;
+                let mixer = decompress_mixer(&compressed, limits.max_animation_bytes())?;
+                let curves = parse_secondary_animation_curves(&mixer, limits)?;
+                for curve in &curves {
+                    total_curve_keys = total_curve_keys
+                        .checked_add(curve.keyframes.len() as u64)
+                        .ok_or(Error::OffsetOverflow)?;
+                    enforce_item_limit(
+                        total_curve_keys,
+                        limits.max_animation_items(),
+                        "animation curve keys",
+                    )?;
+                }
+                curves
+            } else {
+                Vec::new()
+            };
             let values = if let Some(value_map) = source.value_map.as_deref() {
                 total_value_bytes = total_value_bytes
                     .checked_add(value_map.len() as u64)
@@ -670,6 +799,7 @@ impl<R: Read + Seek> ClipFile<R> {
                 value_map_present: source.value_map.is_some(),
                 values,
                 curves,
+                secondary_curves,
             });
         }
         tracks.sort_by_key(CelTrack::layer_id);
@@ -1094,6 +1224,268 @@ fn parse_animation_curves(bytes: &[u8], limits: Limits) -> Result<Vec<AnimationC
     Ok(curves)
 }
 
+fn parse_secondary_animation_curves(
+    bytes: &[u8],
+    limits: Limits,
+) -> Result<Vec<SecondaryAnimationCurve>> {
+    let (strings, data_start) = parse_string_table_with_data_start(bytes, limits)?;
+    let Some(fcurve) = string_id_optional(&strings, "FCurve") else {
+        return Ok(Vec::new());
+    };
+    let curve_type = string_id(&strings, "Type")?;
+    let (Some(int32_array), Some(name), Some(end)) = (
+        string_id_optional(&strings, "Int32[]"),
+        string_id_optional(&strings, "Name"),
+        string_id_optional(&strings, "End"),
+    ) else {
+        return Ok(Vec::new());
+    };
+    let field_prefix = [int32_array, name, end];
+    let pattern = [fcurve, 0, 1, curve_type];
+    let minimum_size = (pattern.len() + 2 + field_prefix.len())
+        .checked_mul(4)
+        .ok_or(Error::OffsetOverflow)?;
+    let mut curves = Vec::new();
+    for start in data_start..=bytes.len().saturating_sub(minimum_size) {
+        if !u32_pattern_matches(bytes, start, &pattern) {
+            continue;
+        }
+        let mut cursor = start + pattern.len() * 4;
+        let kind_id = read_u32(bytes, &mut cursor)?;
+        let Some(kind) = strings.get(kind_id as usize) else {
+            continue;
+        };
+        let field_count = read_u32(bytes, &mut cursor)?;
+        if !u32_pattern_matches(bytes, cursor, &field_prefix) {
+            continue;
+        }
+        enforce_item_limit(
+            u64::from(field_count),
+            limits.max_animation_items().min(1_024),
+            "secondary animation mixer fields",
+        )?;
+        enforce_item_limit(
+            curves.len() as u64 + 1,
+            limits.max_animation_items(),
+            "secondary animation mixer curves",
+        )?;
+        curves.push(parse_secondary_animation_curve_fields(
+            bytes,
+            &strings,
+            &mut cursor,
+            kind.clone(),
+            field_count,
+            int32_array,
+            limits,
+        )?);
+    }
+    Ok(curves)
+}
+
+fn parse_secondary_animation_curve_fields(
+    bytes: &[u8],
+    strings: &[String],
+    cursor: &mut usize,
+    kind: String,
+    field_count: u32,
+    int32_array: u32,
+    limits: Limits,
+) -> Result<SecondaryAnimationCurve> {
+    let mut frames = None;
+    let mut values = None;
+    let mut tags = None;
+    let mut interpolation = None;
+    let mut left_slopes = None;
+    let mut right_slopes = None;
+    let mut revise_constant = None;
+    for _ in 0..field_count {
+        if !secondary_field_header_matches(bytes, *cursor, strings.len(), int32_array) {
+            return Err(animation_error(format!(
+                "secondary FCurve {kind} has an invalid field metadata header"
+            )));
+        }
+        *cursor = cursor.checked_add(3 * 4).ok_or(Error::OffsetOverflow)?;
+        let field_id = read_u32(bytes, cursor)?;
+        let type_id = read_u32(bytes, cursor)?;
+        let field = string_at(strings, field_id)?;
+        let field_type = string_at(strings, type_id)?;
+        let count = read_u32(bytes, cursor)?;
+        enforce_item_limit(
+            u64::from(count),
+            limits.max_animation_items(),
+            "secondary animation mixer array items",
+        )?;
+        let count = count as usize;
+        match field_type {
+            "Double[]" if matches!(field, "Frame" | "Value" | "LeftSlope" | "RightSlope") => {
+                let mut array = Vec::new();
+                array
+                    .try_reserve_exact(count)
+                    .map_err(|_| Error::LimitExceeded {
+                        resource: "secondary animation mixer array allocation",
+                        value: count as u64,
+                        limit: limits.max_animation_items(),
+                    })?;
+                for _ in 0..count {
+                    array.push(f64::from_bits(read_u64_le(bytes, cursor)?));
+                }
+                match field {
+                    "Frame" => frames = Some(array),
+                    "Value" => values = Some(array),
+                    "LeftSlope" => left_slopes = Some(array),
+                    "RightSlope" => right_slopes = Some(array),
+                    _ => unreachable!(),
+                }
+            }
+            "Single[]" if matches!(field, "Frame" | "Value" | "LeftSlope" | "RightSlope") => {
+                let mut array = Vec::new();
+                array
+                    .try_reserve_exact(count)
+                    .map_err(|_| Error::LimitExceeded {
+                        resource: "secondary animation mixer array allocation",
+                        value: count as u64,
+                        limit: limits.max_animation_items(),
+                    })?;
+                for _ in 0..count {
+                    array.push(f64::from(f32::from_bits(read_u32(bytes, cursor)?)));
+                }
+                match field {
+                    "Frame" => frames = Some(array),
+                    "Value" => values = Some(array),
+                    "LeftSlope" => left_slopes = Some(array),
+                    "RightSlope" => right_slopes = Some(array),
+                    _ => unreachable!(),
+                }
+            }
+            "String[]" if field == "Tag" || field == "Interp" => {
+                let mut array = Vec::new();
+                array
+                    .try_reserve_exact(count)
+                    .map_err(|_| Error::LimitExceeded {
+                        resource: "secondary animation string allocation",
+                        value: count as u64,
+                        limit: limits.max_animation_items(),
+                    })?;
+                for _ in 0..count {
+                    let value_id = read_u32(bytes, cursor)?;
+                    array.push(string_at(strings, value_id)?.to_owned());
+                }
+                if field == "Tag" {
+                    tags = Some(array);
+                } else {
+                    interpolation = Some(array);
+                }
+            }
+            "Byte[]" if field == "ReviseConstant" => {
+                let end = cursor.checked_add(count).ok_or(Error::OffsetOverflow)?;
+                revise_constant = Some(
+                    bytes
+                        .get(*cursor..end)
+                        .ok_or_else(|| animation_error("truncated secondary ReviseConstant array"))?
+                        .to_vec(),
+                );
+                *cursor = end;
+            }
+            "Double[]" => skip_array(bytes, cursor, count, 8)?,
+            "Single[]" | "String[]" | "Int32[]" | "UInt32[]" => {
+                skip_array(bytes, cursor, count, 4)?;
+            }
+            "Byte[]" => skip(bytes, cursor, count)?,
+            "Float2[]" => skip_array(bytes, cursor, count, 8)?,
+            "Float3[]" => skip_array(bytes, cursor, count, 12)?,
+            "Double2[]" => skip_array(bytes, cursor, count, 16)?,
+            "Double3[]" => skip_array(bytes, cursor, count, 24)?,
+            "Quat[]" => skip_array(bytes, cursor, count, 32)?,
+            "Matrix44[]" => skip_array(bytes, cursor, count, 128)?,
+            other => {
+                return Err(animation_error(format!(
+                    "unsupported secondary FCurve field type {other:?} for {field:?}"
+                )));
+            }
+        }
+        if [read_u32(bytes, cursor)?, read_u32(bytes, cursor)?] != [0, 0] {
+            return Err(animation_error(format!(
+                "secondary FCurve field {field:?} has a nonzero terminator"
+            )));
+        }
+    }
+    let frames =
+        frames.ok_or_else(|| animation_error(format!("secondary {kind} has no Frame array")))?;
+    let values =
+        values.ok_or_else(|| animation_error(format!("secondary {kind} has no Value array")))?;
+    let count = frames.len();
+    require_curve_array_length(&kind, "secondary Value", values.len(), count)?;
+    require_optional_curve_array_length(&kind, "secondary Tag", tags.as_ref(), count)?;
+    require_optional_curve_array_length(&kind, "secondary Interp", interpolation.as_ref(), count)?;
+    require_optional_curve_array_length(&kind, "secondary LeftSlope", left_slopes.as_ref(), count)?;
+    require_optional_curve_array_length(
+        &kind,
+        "secondary RightSlope",
+        right_slopes.as_ref(),
+        count,
+    )?;
+    require_optional_curve_array_length(
+        &kind,
+        "secondary ReviseConstant",
+        revise_constant.as_ref(),
+        count,
+    )?;
+    if frames.iter().any(|value| !value.is_finite())
+        || values.iter().any(|value| !value.is_finite())
+        || frames.windows(2).any(|pair| pair[0] > pair[1])
+    {
+        return Err(animation_error(format!(
+            "secondary {kind} curve contains invalid or unsorted numeric values"
+        )));
+    }
+    let mut keyframes = Vec::new();
+    keyframes
+        .try_reserve_exact(count)
+        .map_err(|_| Error::LimitExceeded {
+            resource: "secondary animation curve key allocation",
+            value: count as u64,
+            limit: limits.max_animation_items(),
+        })?;
+    for (index, (time_60hz, value)) in frames.into_iter().zip(values).enumerate() {
+        keyframes.push(SecondaryAnimationCurveKeyframe {
+            time_60hz,
+            value,
+            tag: tags.as_ref().map(|array| array[index].clone()),
+            interpolation: interpolation.as_ref().map(|array| array[index].clone()),
+            left_slope: left_slopes.as_ref().map(|array| array[index]),
+            right_slope: right_slopes.as_ref().map(|array| array[index]),
+            revise_constant: revise_constant.as_ref().map(|array| array[index]),
+        });
+    }
+    Ok(SecondaryAnimationCurve { kind, keyframes })
+}
+
+fn secondary_field_header_matches(
+    bytes: &[u8],
+    start: usize,
+    string_count: usize,
+    int32_array: u32,
+) -> bool {
+    let mut words = [0_u32; 3];
+    for (index, word) in words.iter_mut().enumerate() {
+        let offset = match start.checked_add(index * 4) {
+            Some(offset) => offset,
+            None => return false,
+        };
+        *word = match bytes
+            .get(offset..offset + 4)
+            .and_then(|value| <[u8; 4]>::try_from(value).ok())
+        {
+            Some(value) => u32::from_le_bytes(value),
+            None => return false,
+        };
+    }
+    words[0] == int32_array
+        && words[1..]
+            .iter()
+            .all(|value| (*value as usize) < string_count)
+}
+
 fn parse_animation_curve_fields(
     bytes: &[u8],
     strings: &[String],
@@ -1262,6 +1654,13 @@ fn require_optional_curve_array_length<T>(
 }
 
 fn parse_string_table(bytes: &[u8], limits: Limits) -> Result<Vec<String>> {
+    Ok(parse_string_table_with_data_start(bytes, limits)?.0)
+}
+
+fn parse_string_table_with_data_start(
+    bytes: &[u8],
+    limits: Limits,
+) -> Result<(Vec<String>, usize)> {
     if bytes.len() < 20 || !matches!(&bytes[..12], b"cmt 0100binc" | b"cmt 0110binc") {
         return Err(animation_error("unsupported animation mixer signature"));
     }
@@ -1297,7 +1696,7 @@ fn parse_string_table(bytes: &[u8], limits: Limits) -> Result<Vec<String>> {
         );
         cursor = end;
     }
-    Ok(strings)
+    Ok((strings, cursor))
 }
 
 fn u32_pattern_matches(bytes: &[u8], start: usize, pattern: &[u32]) -> bool {
@@ -1337,6 +1736,15 @@ fn read_u32(bytes: &[u8], cursor: &mut usize) -> Result<u32> {
         .ok_or_else(|| animation_error("truncated animation mixer integer"))?;
     *cursor = end;
     Ok(u32::from_le_bytes(value.try_into().expect("four bytes")))
+}
+
+fn read_u64_le(bytes: &[u8], cursor: &mut usize) -> Result<u64> {
+    let end = cursor.checked_add(8).ok_or(Error::OffsetOverflow)?;
+    let value = bytes
+        .get(*cursor..end)
+        .ok_or_else(|| animation_error("truncated secondary animation mixer integer"))?;
+    *cursor = end;
+    Ok(u64::from_le_bytes(value.try_into().expect("eight bytes")))
 }
 
 fn skip_array(bytes: &[u8], cursor: &mut usize, count: usize, element_size: usize) -> Result<()> {
@@ -1552,6 +1960,100 @@ mod tests {
         bytes
     }
 
+    fn secondary_binc() -> Vec<u8> {
+        let strings = [
+            "FCurve",
+            "Type",
+            "ImageCelName",
+            "Int32[]",
+            "Name",
+            "End",
+            "Frame",
+            "Double[]",
+            "Value",
+            "Tag",
+            "String[]",
+            "A",
+            "B",
+            "Interp",
+            "Linear",
+            "LeftSlope",
+            "RightSlope",
+            "ReviseConstant",
+            "Byte[]",
+            "Version",
+            "Version-Information",
+            "2.1.0",
+        ];
+        let mut bytes = Vec::from(b"cmt 0110binc".as_slice());
+        bytes.extend_from_slice(&[0; 4]);
+        push_u32(&mut bytes, strings.len() as u32);
+        for value in strings {
+            bytes.push(value.len() as u8);
+            bytes.extend_from_slice(value.as_bytes());
+        }
+
+        for value in [0, 0, 1, 1, 2, 7, 3, 99, 100] {
+            push_u32(&mut bytes, value);
+        }
+        for value in [0, 0, 1, 1, 2] {
+            push_u32(&mut bytes, value);
+        }
+        push_u32(&mut bytes, 7);
+
+        let prefix = [3, 4, 5];
+        for (field, values) in [(6, [0.0_f64, 60.0]), (8, [0.0_f64, 1.0])] {
+            for value in prefix {
+                push_u32(&mut bytes, value);
+            }
+            push_u32(&mut bytes, field);
+            push_u32(&mut bytes, 7);
+            push_u32(&mut bytes, values.len() as u32);
+            for value in values {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            push_u32(&mut bytes, 0);
+            push_u32(&mut bytes, 0);
+        }
+        let string_prefix = [3, 19, 4];
+        for (field, values) in [(9, [11, 12]), (13, [14, 14])] {
+            for value in string_prefix {
+                push_u32(&mut bytes, value);
+            }
+            push_u32(&mut bytes, field);
+            push_u32(&mut bytes, 10);
+            push_u32(&mut bytes, values.len() as u32);
+            for value in values {
+                push_u32(&mut bytes, value);
+            }
+            push_u32(&mut bytes, 0);
+            push_u32(&mut bytes, 0);
+        }
+        for field in [15, 16] {
+            for value in prefix {
+                push_u32(&mut bytes, value);
+            }
+            push_u32(&mut bytes, field);
+            push_u32(&mut bytes, 7);
+            push_u32(&mut bytes, 2);
+            bytes.extend_from_slice(&0.0_f64.to_le_bytes());
+            bytes.extend_from_slice(&0.0_f64.to_le_bytes());
+            push_u32(&mut bytes, 0);
+            push_u32(&mut bytes, 0);
+        }
+        let byte_prefix = [3, 20, 21];
+        for value in byte_prefix {
+            push_u32(&mut bytes, value);
+        }
+        push_u32(&mut bytes, 17);
+        push_u32(&mut bytes, 18);
+        push_u32(&mut bytes, 2);
+        bytes.extend_from_slice(&[1, 0]);
+        push_u32(&mut bytes, 0);
+        push_u32(&mut bytes, 0);
+        bytes
+    }
+
     fn push_u64(bytes: &mut Vec<u8>, value: u64) {
         bytes.extend_from_slice(&value.to_be_bytes());
     }
@@ -1710,6 +2212,21 @@ mod tests {
             database.timelines(Limits::default().with_max_animation_items(0)),
             Err(Error::LimitExceeded { .. })
         ));
+    }
+
+    #[test]
+    fn parses_secondary_double_precision_curves() {
+        let curves =
+            parse_secondary_animation_curves(&secondary_binc(), Limits::default()).unwrap();
+        assert_eq!(curves.len(), 1);
+        assert_eq!(curves[0].kind(), "ImageCelName");
+        assert_eq!(curves[0].keyframes().len(), 2);
+        assert_eq!(curves[0].keyframes()[1].time_60hz(), 60.0);
+        assert_eq!(curves[0].keyframes()[1].value(), 1.0);
+        assert_eq!(curves[0].keyframes()[0].tag(), Some("A"));
+        assert_eq!(curves[0].keyframes()[0].interpolation(), Some("Linear"));
+        assert_eq!(curves[0].keyframes()[0].left_slope(), Some(0.0));
+        assert_eq!(curves[0].keyframes()[0].revise_constant(), Some(1));
     }
 
     #[test]

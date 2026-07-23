@@ -201,9 +201,13 @@ BINC文字列表を用いて `FCurve` を列挙すると、`Frame` / `Value` に
 
 `LayerUuidWithTrack` の16-byte値は `Layer.LayerUuid` のテキスト表現と正規化後に一致し、全291トラックを対象レイヤーへ一意に対応できた。`TrackKind=4000` の4行には `PlayTime` 4曲線・8キー、`TrackKind=4001` の4行には `AudioPlayer` と `PlayTime` 合計10曲線・15キーがあった。`4001` は `Layer.AudioLayer=1` および `AudioVolume` トークンを持つため、音声制御トラックと確認できる。汎用公開APIはprimary `TrackActionMixer` の合計270曲線・12,347キーを読み、既存のセル選択ビューと検証用exporterも5件すべてで一致した。本文にはタイムライン名、セルタグ、音声名、レイヤー名、ファイル別の対応を記録しない。
 
-`TimeLine.FirstTrack` と `Track.TrackNextIndex` は5件でそれぞれ60、60、76、46、49行を重複なく全件到達し、0で終端した。`1000` の42行はすべて描画Mipmapと子を持つfolder、`2003` の5行はすべて `LayerType=1584` / `SpecialRenderType=20` のpaper、`4000` の4行はすべて `PlayTime` 曲線・値を持つため、これらを判定helperへ追加した。`2001` は描画Mipmapを持つleaf 45行だが、42行がraster、3行が別の `LayerType=0` であり、完全な意味はまだ固定しない。
+`TimeLine.FirstTrack` と `Track.TrackNextIndex` は5件でそれぞれ60、60、76、46、49行を重複なく全件到達し、0で終端した。`1000` の42行はすべて描画Mipmapと子を持つfolder、`2003` の5行はすべて `LayerType=1584` / `SpecialRenderType=20` のpaper、`4000` の4行はすべて `PlayTime` 曲線・値を持つため、これらを判定helperへ追加した。`4000` の対象layerは4件とも `LayerType=0` のleafで `LayerType=256` のroot直下にあり、2Dカメラ用trackではなかった。`2001` は描画Mipmapを持つleaf 45行だが、42行がraster、3行が別の `LayerType=0` であり、完全な意味はまだ固定しない。
 
-inline `TrackValueMap` は全291行で境界まで一致した。先頭はbig-endianの固定長8とentry数で、各entryは自身を含むbig-endian record長、UTF-16BEのparameter名と文字列値、type判別値、payloadを持つ。type 0は8-byte IEEE 754倍精度、type 2は4-byte整数だった。`2000` の191行には各1件の `ImageCelName` があり、整数値は対応FCurveの値と191/191で一致した。`4000` の4行は `PlayTime`、`4001` の4行は各 `PlayTime` / `AudioPlayer` / `AudioVolume` を持つ。公開APIは確認済み2型を型付きで返し、未知typeのpayloadも保持する。`TrackActionMixer2` は全行に外部IDがあり、cel・play-time・audio行では `0110binc` の型schemaと値領域が分離していることまで確認したが、値ストリームの意味はまだ固定しない。
+inline `TrackValueMap` は全291行で境界まで一致した。先頭はbig-endianの固定長8とentry数で、各entryは自身を含むbig-endian record長、UTF-16BEのparameter名と文字列値、type判別値、payloadを持つ。type 0は8-byte IEEE 754倍精度、type 2は4-byte整数だった。`2000` の191行には各1件の `ImageCelName` があり、整数値は対応FCurveの値と191/191で一致した。`4000` の4行は `PlayTime`、`4001` の4行は各 `PlayTime` / `AudioPlayer` / `AudioVolume` を持つ。公開APIは確認済み2型を型付きで返し、未知typeのpayloadも保持する。
+
+`TrackActionMixer2` は全行に外部IDがあり、cel・play-time・audio行では `0110binc` の型schemaと値領域が分離している。値recordは先頭fieldの `Int32[]` / `Name` / `End` metadata headerでschema側の見かけ上の `FCurve` と区別できる。後続fieldも3語headerの先頭は `Int32[]` だが、残り2語は数値・文字列・byte配列で異なる。その後はfield名・配列型・要素数・payload・2個の0終端が続く。
+
+Rust APIで5件を再読込すると、secondaryの値recordは37曲線・37キーあり、内訳は `ImageCelName` 32曲線と `AudioPlayer` 5曲線だった。primary 270曲線の完全な複製ではなく、`PlayTime` などには対応するsecondary値recordがない。この37件は対応するprimary曲線と時刻・値・補間・傾き・タグ・revision flagがすべて完全一致した。数値配列はprimaryの `Single[]` に対してsecondaryでは `Double[]` であり、公開APIは `SecondaryAnimationCurve` / `SecondaryAnimationCurveKeyframe` から `f64` のまま返す。
 
 ## タイムラプス
 

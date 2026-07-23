@@ -28,7 +28,8 @@ mod vector;
 #[cfg(feature = "animation")]
 pub use animation::{
     Animation, AnimationCurve, AnimationCurveKeyframe, AnimationTrack, AnimationTrackKind,
-    AnimationTrackValue, AnimationTrackValueEntry, CelKeyframe, CelTrack, Timeline,
+    AnimationTrackValue, AnimationTrackValueEntry, CelKeyframe, CelTrack, SecondaryAnimationCurve,
+    SecondaryAnimationCurveKeyframe, Timeline,
 };
 pub use container::{
     CHUNK_HEADER_SIZE, ChunkHeader, ChunkIter, ChunkKind, ClipFile, ExternalChunkHeader,
