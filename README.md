@@ -127,7 +127,7 @@ values while preserving future value types as opaque payloads. Secondary
 `0110binc` value records are sparse, use independently validated field
 metadata, and preserve their `Double[]` frame, value, and slope arrays as
 `f64`. Verified raw-kind helpers cover non-cel folders, image-cel folders,
-paper, play-time control, and audio control.
+static-image layers, paper, play-time control, and audio control.
 
 The `timelapse` feature validates `TimeLapseManager`, `TimeLapseRecord`, and
 `TimeLapseBlob` linked lists, including canvas ownership, contiguous decoded

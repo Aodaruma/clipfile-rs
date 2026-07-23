@@ -147,6 +147,15 @@ impl AnimationTrackKind {
         self.0 == 1000
     }
 
+    /// Whether this is the verified static-image-layer kind (`2001`).
+    ///
+    /// The observed tracks target raster or resizable-image leaf layers and
+    /// contain no value curves.
+    #[must_use]
+    pub const fn is_static_image(self) -> bool {
+        self.0 == 2001
+    }
+
     /// Whether this is the verified paper-layer kind (`2003`).
     #[must_use]
     pub const fn is_paper(self) -> bool {
@@ -2310,5 +2319,16 @@ mod tests {
             validate_track_chain(&valid, 2),
             Err(Error::InvalidAnimation { .. })
         ));
+    }
+
+    #[test]
+    fn classifies_verified_track_kinds() {
+        assert!(AnimationTrackKind::new(1000).is_folder());
+        assert!(AnimationTrackKind::new(2000).is_image_cel());
+        assert!(AnimationTrackKind::new(2001).is_static_image());
+        assert!(AnimationTrackKind::new(2003).is_paper());
+        assert!(AnimationTrackKind::new(4000).is_play_time());
+        assert!(AnimationTrackKind::new(4001).is_audio());
+        assert!(!AnimationTrackKind::new(9999).is_static_image());
     }
 }

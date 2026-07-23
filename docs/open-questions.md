@@ -61,9 +61,9 @@
 ## アニメーションの未解釈部分
 
 - 状態: Track chain、primary action mixerの全FCurve、inline `TrackValueMap`、secondary mixerの実値を持つ倍精度FCurveまで対応
-- 観測: 既存コーパス5件の291トラックからprimary 270曲線・12,347キーを復号した。`FirstTrack` / `TrackNextIndex` は全件を一度ずつ通る終端付きchainだった。`1000` はnon-cel folder 42/42、`2003` はpaper 5/5、`4000` は `PlayTime` 4/4、`4001` はaudio 4/4と対応した。`2000` は複数の `ImageCelName` を持つ。補間、左右傾き、任意タグもキー数一致を確認した。`TrackValueMap` は全291行でrecord境界まで一致し、type 0の倍精度値とtype 2の文字列・整数値を確認した。`2000` の整数値は対応FCurve値と191/191で一致した。secondary `0110binc` の値recordは先頭fieldの `Int32[]` / `Name` / `End` metadata headerでschema記述と区別でき、後続headerはfield種別により残り2語が変化する。実値は37曲線・37キー（cel 32、audio 5）で、対応するprimaryと全フィールドが37/37で完全一致した。`4000` の4行は対象layerがtype 0のleafでtype 256のroot直下にあり、2Dカメラ用trackではないことも確認した。
-- 現在の扱い: chainを検証してnext ID、raw track kind、primaryの単精度曲線、secondaryの倍精度曲線、型付きvalue mapを公開する。`1000` / `2000` / `2003` / `4000` / `4001` は確認済みhelperを持つ。未知value typeはpayloadを保持する。`2001` の完全な意味と各 `Value` の単位は固定しない。従来の `CelTrack` は先頭のprimary `ImageCelName` を使う。
-- 次の調査: `TrackKind=2001` のtype 0 leafと2Dカメラを最小差分で比較し、secondary値recordの追加variantが得られた場合はmetadata headerと型対応を拡張する。
+- 観測: 既存コーパス5件の291トラックからprimary 270曲線・12,347キーを復号した。`FirstTrack` / `TrackNextIndex` は全件を一度ずつ通る終端付きchainだった。`1000` はnon-cel folder 42/42、`2001` はstatic image 45/45、`2003` はpaper 5/5、`4000` は `PlayTime` 4/4、`4001` はaudio 4/4と対応した。`2001` の内訳はraster 42と `ResizableImageInfo` を持つresizable image 3で、全件の曲線とvalue entryが空だった。`2000` は複数の `ImageCelName` を持つ。補間、左右傾き、任意タグもキー数一致を確認した。`TrackValueMap` は全291行でrecord境界まで一致し、type 0の倍精度値とtype 2の文字列・整数値を確認した。`2000` の整数値は対応FCurve値と191/191で一致した。secondary `0110binc` の値recordは先頭fieldの `Int32[]` / `Name` / `End` metadata headerでschema記述と区別でき、後続headerはfield種別により残り2語が変化する。実値は37曲線・37キー（cel 32、audio 5）で、対応するprimaryと全フィールドが37/37で完全一致した。`4000` の4行は対象layerがtype 0のleafでtype 256のroot直下にあり、2Dカメラ用trackではないことも確認した。
+- 現在の扱い: chainを検証してnext ID、raw track kind、primaryの単精度曲線、secondaryの倍精度曲線、型付きvalue mapを公開する。`1000` / `2000` / `2001` / `2003` / `4000` / `4001` は確認済みhelperを持つ。未知value typeはpayloadを保持する。各 `Value` の単位は固定しない。従来の `CelTrack` は先頭のprimary `ImageCelName` を使う。
+- 次の調査: 2Dカメラを最小差分で比較し、secondary値recordの追加variantが得られた場合はmetadata headerと型対応を拡張する。
 
 ## タイムラプス内部ストリーム
 
