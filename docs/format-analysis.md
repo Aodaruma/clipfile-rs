@@ -207,14 +207,16 @@ inline `TrackValueMap` は全291行で境界まで一致した。先頭はbig-en
 
 既存コーパスの2件に `TimeLapseManager`、`TimeLapseRecord`、`TimeLapseBlob` が存在した。各managerはcanvasごとのrecord連結リスト、各recordはblob連結リストの先頭IDを持つ。2件ともmanager 1件・record 1件で、blobは合計9件だった。全blobで `BlobType=2`、`BlobData` は40-byte外部ID、外部本体はbig-endianの4-byte圧縮長を持つzlibだった。
 
-blobの `BlobOffset` はrecord内で0から隙間なく連続し、`BlobSizeCompressed` は4-byte長を含む外部本体サイズ、`BlobSize` は展開後サイズと一致した。9件をストリーミング展開した合計は436,576,484 byteである。`EncoderName` は2件とも `WEBP`、展開ストリームは `GMIK` で始まり、先頭28 byte後にRIFFシグネチャを持っていた。公開APIは連結リストの循環・共有・欠落、canvas不一致、offset、圧縮長、展開長、上限を検証する。`GMIK` 内部のフレーム境界や時刻はまだ解釈しない。
+blobの `BlobOffset` はrecord内で0から隙間なく連続し、`BlobSizeCompressed` は4-byte長を含む外部本体サイズ、`BlobSize` は展開後サイズと一致した。9件をストリーミング展開した合計は436,576,484 byteである。`EncoderName` は2件とも `WEBP` だった。
+
+展開ストリームをBLOB境界を越えて走査すると、合計76,799件すべてが `28-byte header + RIFF/WebP` の連続recordだった。headerはlittle-endianで、offset 0のFourCCは `GMIK` または `GMID`、offset 4の長さはRIFF全長+16、offset 8と16は0、offset 12は1から `EncoderSequence` まで欠番のない連番、offset 20と24は意味未確定の値だった。`GMIK` は3,100件、`GMID` は73,699件で、RIFFの先頭chunkは `VP8 ` または `VP8X`、WebP寸法は1×1から2,304×1,296の範囲だった。全recordで宣言長と境界が一致し、末尾余剰はなかった。公開APIは画像payloadを保持せずこれらを検証し、raw FourCC、2つのparameter、RIFF offset・長、sequence、先頭chunk、寸法を索引として返す。K/Dと2 parameterの意味、記録時刻・再生間隔はまだ固定しない。
 
 ## 未解明・未確認事項
 
 - `BlockStatus` 値の意味とチェックサムアルゴリズム
 - 1-bit、異なるタイル寸法・追加チャンネル配置
 - ベクター本体、テキスト属性、3D、定規、特殊レイヤーの完全な意味
-- secondary animation mixer、タイムラプス内部フレーム索引の完全な意味
+- secondary animation mixer、タイムラプスK/D・header parameter・時刻規則の完全な意味
 - `.cmc` の外側構造と複数ページ参照
 - DBから参照されるが `ExternalChunk` に存在しない外部IDの意味
 - アプリケーションのバージョン間での完全なスキーマ移行規則

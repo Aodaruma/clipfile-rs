@@ -29,13 +29,13 @@ Implemented:
 - optional timeline, generic primary action-mixer curves, image-cel selection,
   audio/play-time curve decoding, and typed inline track values; and
 - optional validated time-lapse manager/record/blob chains with bounded reads
-  and streaming decompression; and
+  and streaming decompression, plus streaming internal WebP frame indexing; and
 - optional `Offscreen.Attribute`, zlib tile, and RGBA/grayscale raster decoding.
 
 Not implemented yet:
 
 - semantic vector/text-attribute decoding, secondary animation mixers,
-  semantic time-lapse frame indexing, or `.cmc` support; and
+  time-lapse playback/timestamp semantics, or `.cmc` support; and
 - writing or modifying files.
 
 See [the format analysis](docs/format-analysis.md) and
@@ -129,7 +129,11 @@ The `timelapse` feature validates `TimeLapseManager`, `TimeLapseRecord`, and
 offsets, declared sizes, external-object references, and the observed
 big-endian compressed-length prefix. `ClipFile::read_time_lapse_blob` returns
 one bounded decoded segment, while `copy_time_lapse_blob` streams it to a
-writer. The internal `GMIK`/RIFF frame index is not interpreted yet.
+writer. `read_time_lapse_frame_index` streams across all blobs without
+retaining image payloads and validates the internal 28-byte records,
+one-based sequence, RIFF/WebP boundaries, and observed VP8 dimensions.
+`GMIK`/`GMID` kinds and two origin-like header parameters remain raw because
+their complete playback meaning is not independently verified.
 
 The `raster` feature builds on `sqlite`. It resolves a layer render, layer
 mask, or mipmap to its base offscreen data, supports bounded tile-by-tile

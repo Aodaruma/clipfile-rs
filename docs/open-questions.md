@@ -67,10 +67,10 @@
 
 ## タイムラプス内部ストリーム
 
-- 状態: record/blob連結とBLOB展開まで対応
-- 観測: 2サンプルの9 BLOBは `WEBP` encoder、big-endian長付きzlibで、DBの圧縮・展開サイズと連続offsetが一致した。展開先頭は `GMIK`、28 byte後にRIFFを持つ。
-- 現在の扱い: BLOB単位で上限付き読み取りまたはwriterへのストリーミング展開を行う。`BlobType` とencoder sequenceはraw値を保持する。
-- 次の調査: 匿名の短時間記録を作成し、操作回数・記録時間・保存タイミングの最小差分から `GMIK` ヘッダ、RIFF/WebPフレーム境界、時刻索引を解析する。
+- 状態: record/blob連結、BLOB展開、内部WebP frame索引まで対応
+- 観測: 2サンプルの9 BLOBは `WEBP` encoder、big-endian長付きzlibで、DBの圧縮・展開サイズと連続offsetが一致した。計76,799件すべてが28-byte little-endian headerとRIFF/WebPの連続recordで、長さ、1-origin sequence、`EncoderSequence`、末尾境界が一致した。FourCCは `GMIK` 3,100件と `GMID` 73,699件、先頭WebP chunkは `VP8 ` / `VP8X` だった。
+- 現在の扱い: BLOB単位の上限付き読み取り・ストリーミング展開に加え、画像payloadを保持しないframe indexを公開する。FourCC、2つのreserved値、2つの意味未確定parameter、RIFF offset・長、sequence、WebP先頭chunk・寸法を保持する。
+- 次の調査: 匿名の短時間記録で描画位置、キャンバスサイズ、操作回数、記録時間を1項目ずつ変え、`GMIK` / `GMID`、2 parameter、記録時刻・再生間隔の対応を確定する。
 
 ## GUI検証の運用
 

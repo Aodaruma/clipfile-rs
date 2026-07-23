@@ -10,7 +10,7 @@
 - `VectorDataSource`: ベクターデータ行、所有キャンバス・レイヤーID、不透明な外部ID
 - `TextLayerData` / `TextObjectData`: UTF-8本文、所有レイヤー、形式値、オブジェクト別の不透明な属性
 - `Animation` / `Timeline` / `AnimationTrack` / `AnimationCurve` / `AnimationTrackValueEntry` / `CelTrack`: 再生範囲、fps、raw track kind、レイヤー対応、汎用FCurve、現在値、セル選択キー
-- `TimeLapse` / `TimeLapseManager` / `TimeLapseRecord` / `TimeLapseBlob`: canvasごとの記録と連続BLOB
+- `TimeLapse` / `TimeLapseManager` / `TimeLapseRecord` / `TimeLapseBlob` / `TimeLapseFrame`: canvasごとの記録、連続BLOB、内部WebP frame索引
 - `Layer`: 名前、種類、合成、可視性、不透明度、ロック、クリッピング、マスク、兄弟・子・Mipmap参照
 - `LayerTree`: ルートから再構成した子IDの順序と、到達不能なレイヤーID
 - `Document`: 上記の所有とID検索
@@ -43,7 +43,9 @@
 
 `timelapse` featureの `Database::time_lapse(limits)` は、manager・record・blobの連結リストを再構成し、循環、共有、欠落、canvas所有、連続offsetを検証する。各 `TimeLapseBlob` は外部ID、raw `BlobType`、圧縮・展開サイズを保持する。`ClipFile::read_time_lapse_blob` は1 BLOBだけを上限付きで確保し、`copy_time_lapse_blob` はwriterへ展開する。どちらもbig-endian長付きzlib、DBの `BlobSizeCompressed`（4-byte長を含む）、実際の展開長を照合する。
 
-`Limits::max_time_lapse_blob_bytes` は1 BLOBの圧縮・展開サイズ、`Limits::max_time_lapse_items` はmanager・record・blob数を制限する。record全体は数百MiBになり得るため、一括結合APIは設けない。
+`ClipFile::read_time_lapse_frame_index` はrecordの全BLOBを順に展開し、画像payloadを保持せず内部frame索引だけを返す。各frameについて28-byte little-endian record header、連番、record長、RIFF/WebP境界、先頭 `VP8 ` / `VP8X` chunkの寸法を検証する。`TimeLapseFrameKind` は `GMIK` / `GMID` をraw FourCCのまま保持し、意味未確定の2つのheader値とreserved値も捨てない。
+
+`Limits::max_time_lapse_blob_bytes` は1 BLOBの圧縮・展開サイズ、`Limits::max_time_lapse_items` はmanager・record・blob・frame数を制限する。record全体は数百MiBになり得るため、一括結合APIは設けない。
 
 ルートから到達できないレイヤー行は、履歴・削除状態などの可能性を推測して破棄せず、`LayerTree::unreachable_layer_ids()` に残す。
 
@@ -51,4 +53,4 @@
 
 `LayerType` はビットフラグとして複数用途を表し、`LayerComposite` にも将来値が追加され得る。このため `LayerKind` と `BlendMode` は閉じたenumにせず、`raw()` で元の整数を必ず返す。`is_pixel()` などは、現在確認できたビットだけを判定する補助APIである。
 
-ベクターは外部本体への安全な到達まで対応したが、線・制御点・ブラシ属性はまだ解釈しない。テキストは本文と属性レコードの境界まで対応したが、フォント・段落・変形属性は未解釈である。アニメーションはprimary mixerのFCurveとinline value map、タイムラプスは連続BLOBまで対応したが、secondary mixer、カメラ等の完全な意味、`GMIK` 内部フレーム索引は未解釈である。3D、定規の詳細BLOBも同様に未解釈である。これらは元のDBへ `Database::connection()` で読み取りアクセスできるが、安定した意味モデルとしては、最小差分コーパスで検証後に追加する。
+ベクターは外部本体への安全な到達まで対応したが、線・制御点・ブラシ属性はまだ解釈しない。テキストは本文と属性レコードの境界まで対応したが、フォント・段落・変形属性は未解釈である。アニメーションはprimary mixerのFCurveとinline value map、タイムラプスは内部WebP frame索引まで対応したが、secondary mixer、カメラ、`GMIK` / `GMID` とheader parameterの完全な意味、時刻・再生規則は未解釈である。3D、定規の詳細BLOBも同様に未解釈である。これらは元のDBへ `Database::connection()` で読み取りアクセスできるが、安定した意味モデルとしては、最小差分コーパスで検証後に追加する。

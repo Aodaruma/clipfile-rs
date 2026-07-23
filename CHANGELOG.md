@@ -12,6 +12,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Bounded decoding of inline animation `TrackValueMap` entries, including
   observed floating-point and indexed-text values with opaque fallback.
 - Secondary action-mixer presence reporting on `AnimationTrack`.
+- Streaming time-lapse frame indexing with internal record, sequence,
+  RIFF/WebP boundary, and observed VP8 dimension validation.
 
 ## [0.2.0] - 2026-07-23
 

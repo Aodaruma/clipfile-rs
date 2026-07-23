@@ -55,6 +55,8 @@ pub use raster::{
 #[cfg(feature = "sqlite")]
 pub use text::{TextLayerData, TextObjectData};
 #[cfg(feature = "timelapse")]
-pub use timelapse::{TimeLapse, TimeLapseBlob, TimeLapseManager, TimeLapseRecord};
+pub use timelapse::{
+    TimeLapse, TimeLapseBlob, TimeLapseFrame, TimeLapseFrameKind, TimeLapseManager, TimeLapseRecord,
+};
 #[cfg(feature = "sqlite")]
 pub use vector::VectorDataSource;
