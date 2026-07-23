@@ -113,8 +113,9 @@ total bytes, and object counts are bounded; font, paragraph, and transform
 attributes are not interpreted yet.
 
 The `animation` feature reads validated timeline ranges and resolves tracks to
-their layer UUIDs. It bounds zlib expansion, checks the BINC string table and
-arrays, and exposes every `FCurve` in the primary action mixer, including
+their layer UUIDs. It validates the complete `FirstTrack` / `TrackNextIndex`
+chain, bounds zlib expansion, checks the BINC string table and arrays, and
+exposes every `FCurve` in the primary action mixer, including
 interpolation, slopes, optional tags, and constant-revision flags. The existing
 `CelTrack` view selects the first `ImageCelName` curve for convenient frame
 lookup, while `AnimationTrack` preserves raw track kinds and all curves,
@@ -122,7 +123,8 @@ including observed `PlayTime` and `AudioPlayer` data. It also validates the
 inline `TrackValueMap` and exposes observed floating-point and indexed-text
 values while preserving future value types as opaque payloads. The presence
 of a secondary mixer is reported, but its `0110binc` value stream is not
-decoded yet.
+decoded yet. Verified raw-kind helpers cover non-cel folders, image-cel
+folders, paper, play-time control, and audio control.
 
 The `timelapse` feature validates `TimeLapseManager`, `TimeLapseRecord`, and
 `TimeLapseBlob` linked lists, including canvas ownership, contiguous decoded

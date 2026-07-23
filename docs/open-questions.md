@@ -60,10 +60,10 @@
 
 ## アニメーションの未解釈部分
 
-- 状態: primary action mixerの全FCurveとinline `TrackValueMap` まで対応
-- 観測: 既存コーパス5件の291トラックから270曲線・12,347キーを復号した。`2000` は複数の `ImageCelName`、`4000` は `PlayTime`、`4001` は `AudioPlayer` / `PlayTime` を持つ。補間、左右傾き、任意タグもキー数一致を確認した。`TrackValueMap` は全291行でrecord境界まで一致し、type 0の倍精度値とtype 2の文字列・整数値を確認した。`2000` の整数値は対応FCurve値と191/191で一致した。
-- 現在の扱い: raw track kind、primary mixerの全曲線、型付きvalue mapを公開する。未知value typeはpayloadを保持する。`2000` と `4001` 以外のkind名、各 `Value` の単位は固定しない。従来の `CelTrack` は先頭の `ImageCelName` を使う。secondary mixerは外部IDの有無のみ公開する。
-- 次の調査: `TrackActionMixer2` の `0110binc` schema・値ストリーム、`TrackKind=1000` / `2001` / `2003` の完全な意味、2Dカメラを最小差分で比較する。
+- 状態: Track chain、primary action mixerの全FCurve、inline `TrackValueMap` まで対応
+- 観測: 既存コーパス5件の291トラックから270曲線・12,347キーを復号した。`FirstTrack` / `TrackNextIndex` は全件を一度ずつ通る終端付きchainだった。`1000` はnon-cel folder 42/42、`2003` はpaper 5/5、`4000` は `PlayTime` 4/4、`4001` はaudio 4/4と対応した。`2000` は複数の `ImageCelName` を持つ。補間、左右傾き、任意タグもキー数一致を確認した。`TrackValueMap` は全291行でrecord境界まで一致し、type 0の倍精度値とtype 2の文字列・整数値を確認した。`2000` の整数値は対応FCurve値と191/191で一致した。
+- 現在の扱い: chainを検証してnext ID、raw track kind、primary mixerの全曲線、型付きvalue mapを公開する。`1000` / `2000` / `2003` / `4000` / `4001` は確認済みhelperを持つ。未知value typeはpayloadを保持する。`2001` の完全な意味と各 `Value` の単位は固定しない。従来の `CelTrack` は先頭の `ImageCelName` を使う。secondary mixerは外部IDの有無のみ公開する。
+- 次の調査: `TrackActionMixer2` の `0110binc` schema・値ストリーム、`TrackKind=2001` のtype 0 leaf、2Dカメラを最小差分で比較する。
 
 ## タイムラプス内部ストリーム
 

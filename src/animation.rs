@@ -141,6 +141,24 @@ impl AnimationTrackKind {
         self.0 == 2000
     }
 
+    /// Whether this is the observed non-cel folder kind (`1000`).
+    #[must_use]
+    pub const fn is_folder(self) -> bool {
+        self.0 == 1000
+    }
+
+    /// Whether this is the verified paper-layer kind (`2003`).
+    #[must_use]
+    pub const fn is_paper(self) -> bool {
+        self.0 == 2003
+    }
+
+    /// Whether this is the verified play-time-control kind (`4000`).
+    #[must_use]
+    pub const fn is_play_time(self) -> bool {
+        self.0 == 4000
+    }
+
     /// Whether this is the verified audio-control kind (`4001`).
     #[must_use]
     pub const fn is_audio(self) -> bool {
@@ -276,6 +294,7 @@ pub struct AnimationTrack {
     id: i64,
     kind: AnimationTrackKind,
     layer_id: Option<i64>,
+    next_track_id: Option<i64>,
     action_mixer_present: bool,
     secondary_action_mixer_present: bool,
     value_map_present: bool,
@@ -300,6 +319,12 @@ impl AnimationTrack {
     #[must_use]
     pub const fn layer_id(&self) -> Option<i64> {
         self.layer_id
+    }
+
+    /// Next ID in the timeline's validated `TrackNextIndex` chain.
+    #[must_use]
+    pub const fn next_track_id(&self) -> Option<i64> {
+        self.next_track_id
     }
 
     /// Whether `TrackActionMixer` was present.
@@ -484,7 +509,7 @@ impl Database {
                 id,
                 bank_id: row.get(1)?,
                 next_timeline_id: row.get(2)?,
-                first_track_id: row.get(3)?,
+                first_track_id: row.get::<_, Option<i64>>(3)?.filter(|id| *id != 0),
                 name: name.map(str::to_owned),
                 frame_rate,
                 start_frame,
@@ -639,6 +664,7 @@ impl<R: Read + Seek> ClipFile<R> {
                 id: source.id,
                 kind,
                 layer_id,
+                next_track_id: source.next_track_id,
                 action_mixer_present: source.external_identifier.is_some(),
                 secondary_action_mixer_present: source.secondary_external_identifier.is_some(),
                 value_map_present: source.value_map.is_some(),
@@ -666,6 +692,7 @@ impl<R: Read + Seek> ClipFile<R> {
 struct AnimationTrackSource {
     id: i64,
     kind: i64,
+    next_track_id: Option<i64>,
     external_identifier: Option<Box<[u8]>>,
     secondary_external_identifier: Option<Box<[u8]>>,
     value_map: Option<Box<[u8]>>,
@@ -721,10 +748,11 @@ fn animation_track_sources(
         }
     };
     let sql = format!(
-        "SELECT MainId, TrackKind, TrackActionMixer, LayerUuidWithTrack, {}, {} FROM Track \
+        "SELECT MainId, TrackKind, TrackActionMixer, LayerUuidWithTrack, {}, {}, {} FROM Track \
          WHERE BankId = ?1 ORDER BY MainId",
         optional("TrackActionMixer2"),
         optional("TrackValueMap"),
+        optional("TrackNextIndex"),
     );
     let mut statement = database.connection().prepare(&sql)?;
     let mut rows = statement.query(params![timeline.bank_id])?;
@@ -770,13 +798,51 @@ fn animation_track_sources(
         sources.push(AnimationTrackSource {
             id: row.get(0)?,
             kind: row.get(1)?,
+            next_track_id: nonzero_track_id(row.get(6)?),
             external_identifier: external.map(Box::from),
             secondary_external_identifier: secondary.map(Box::from),
             value_map: value_map.map(Box::from),
             layer_uuid: uuid.map(normalize_uuid).transpose()?,
         });
     }
+    if database.schema().has_column("Track", "TrackNextIndex")
+        && let Some(first_track_id) = timeline.first_track_id
+    {
+        validate_track_chain(&sources, first_track_id)?;
+    }
     Ok(sources)
+}
+
+fn validate_track_chain(sources: &[AnimationTrackSource], first_track_id: i64) -> Result<()> {
+    let by_id = sources
+        .iter()
+        .map(|source| (source.id, source.next_track_id))
+        .collect::<BTreeMap<_, _>>();
+    if by_id.len() != sources.len() {
+        return Err(animation_error("timeline contains duplicate track IDs"));
+    }
+    let mut current = Some(first_track_id);
+    let mut visited = BTreeMap::new();
+    while let Some(id) = current {
+        if visited.insert(id, ()).is_some() {
+            return Err(animation_error(format!(
+                "timeline track chain is cyclic at track {id}"
+            )));
+        }
+        current = *by_id
+            .get(&id)
+            .ok_or_else(|| animation_error(format!("timeline track {id} is missing")))?;
+    }
+    if visited.len() != sources.len() {
+        return Err(animation_error(
+            "timeline track chain contains unreachable tracks",
+        ));
+    }
+    Ok(())
+}
+
+fn nonzero_track_id(value: Option<i64>) -> Option<i64> {
+    value.filter(|value| *value != 0)
 }
 
 fn layer_uuid_ids(database: &Database, limits: Limits) -> Result<BTreeMap<[u8; 16], i64>> {
@@ -1542,7 +1608,8 @@ mod tests {
                  CREATE TABLE Track (
                     MainId INTEGER, BankId INTEGER, TrackKind INTEGER,
                     TrackActionMixer BLOB, LayerUuidWithTrack BLOB,
-                    TrackActionMixer2 BLOB, TrackValueMap BLOB
+                    TrackActionMixer2 BLOB, TrackValueMap BLOB,
+                    TrackNextIndex INTEGER
                  );
                  CREATE TABLE Layer (MainId INTEGER, LayerUuid TEXT);
                  INSERT INTO Layer VALUES (5, '11111111-1111-1111-1111-111111111111');
@@ -1551,7 +1618,7 @@ mod tests {
             .unwrap();
         connection
             .execute(
-                "INSERT INTO Track VALUES (1, 2, 2000, ?1, ?2, ?1, ?3)",
+                "INSERT INTO Track VALUES (1, 2, 2000, ?1, ?2, ?1, ?3, 0)",
                 params![IDENTIFIER, LAYER_UUID, track_value_map()],
             )
             .unwrap();
@@ -1589,6 +1656,7 @@ mod tests {
         let raw_track = &animation.animation_tracks()[0];
         assert!(raw_track.kind().is_image_cel());
         assert_eq!(raw_track.layer_id(), Some(5));
+        assert_eq!(raw_track.next_track_id(), None);
         assert_eq!(raw_track.curves().len(), 1);
         assert_eq!(raw_track.curves()[0].kind(), "ImageCelName");
         assert_eq!(raw_track.curves()[0].keyframes().len(), 2);
@@ -1699,6 +1767,31 @@ mod tests {
                 Limits::default().with_max_animation_items(0)
             ),
             Err(Error::LimitExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn validates_the_timeline_track_chain() {
+        let source = |id, next_track_id| AnimationTrackSource {
+            id,
+            kind: 1000,
+            next_track_id,
+            external_identifier: None,
+            secondary_external_identifier: None,
+            value_map: None,
+            layer_uuid: None,
+        };
+        let valid = [source(1, Some(2)), source(2, None)];
+        validate_track_chain(&valid, 1).unwrap();
+
+        let cycle = [source(1, Some(2)), source(2, Some(1))];
+        assert!(matches!(
+            validate_track_chain(&cycle, 1),
+            Err(Error::InvalidAnimation { .. })
+        ));
+        assert!(matches!(
+            validate_track_chain(&valid, 2),
+            Err(Error::InvalidAnimation { .. })
         ));
     }
 }
