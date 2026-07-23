@@ -99,6 +99,18 @@ impl TimeLapseFrameKind {
     pub fn is_gmid(self) -> bool {
         self.0 == *b"GMID"
     }
+
+    /// Whether this is a verified full-canvas key-frame record (`GMIK`).
+    #[must_use]
+    pub fn is_key_frame(self) -> bool {
+        self.is_gmik()
+    }
+
+    /// Whether this is a verified positioned delta-patch record (`GMID`).
+    #[must_use]
+    pub fn is_delta_frame(self) -> bool {
+        self.is_gmid()
+    }
 }
 
 /// One validated frame record in a decoded time-lapse stream.
@@ -160,16 +172,33 @@ impl TimeLapseFrame {
         self.reserved_after_sequence
     }
 
-    /// First origin-like but not yet semantically fixed header value.
+    /// First raw region parameter.
+    ///
+    /// For `GMID`, this is the verified horizontal patch origin. Its meaning
+    /// remains unverified for `GMIK`; use [`Self::delta_origin`] when possible.
     #[must_use]
     pub const fn parameter_a(&self) -> u32 {
         self.parameter_a
     }
 
-    /// Second origin-like but not yet semantically fixed header value.
+    /// Second raw region parameter.
+    ///
+    /// For `GMID`, this is the verified vertical patch origin. Its meaning
+    /// remains unverified for `GMIK`; use [`Self::delta_origin`] when possible.
     #[must_use]
     pub const fn parameter_b(&self) -> u32 {
         self.parameter_b
+    }
+
+    /// Destination origin for a verified `GMID` delta patch.
+    ///
+    /// Returns `None` for full-canvas `GMIK` records because the two raw
+    /// parameters have a different, still-unverified meaning there.
+    #[must_use]
+    pub fn delta_origin(&self) -> Option<(u32, u32)> {
+        self.kind
+            .is_delta_frame()
+            .then_some((self.parameter_a, self.parameter_b))
     }
 
     /// First WebP chunk kind following the `WEBP` form type.
@@ -1221,6 +1250,8 @@ mod tests {
         assert_eq!(frames.len(), 2);
         assert!(frames[0].kind().is_gmik());
         assert!(frames[1].kind().is_gmid());
+        assert!(frames[0].kind().is_key_frame());
+        assert!(frames[1].kind().is_delta_frame());
         assert_eq!(frames[0].record_offset(), 0);
         assert_eq!(frames[0].encoded_offset(), 28);
         assert_eq!(frames[0].encoded_size(), 30);
@@ -1228,6 +1259,8 @@ mod tests {
         assert_eq!(frames[1].sequence(), 2);
         assert_eq!(frames[1].parameter_a(), 7);
         assert_eq!(frames[1].parameter_b(), 9);
+        assert_eq!(frames[0].delta_origin(), None);
+        assert_eq!(frames[1].delta_origin(), Some((7, 9)));
         assert_eq!(frames[1].webp_chunk_kind(), *b"VP8X");
         assert_eq!(frames[1].webp_dimensions(), Some((64, 32)));
     }

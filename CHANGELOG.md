@@ -14,6 +14,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Secondary action-mixer presence reporting on `AnimationTrack`.
 - Streaming time-lapse frame indexing with internal record, sequence,
   RIFF/WebP boundary, and observed VP8 dimension validation.
+- Verified time-lapse full key-frame and positioned delta-patch helpers.
 - Validated animation `FirstTrack` / `TrackNextIndex` chains and helpers for
   observed folder, static-image, paper, play-time, and audio track kinds.
 - Sparse double-precision `FCurve` decoding for validated secondary

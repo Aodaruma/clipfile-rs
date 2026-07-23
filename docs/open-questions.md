@@ -64,13 +64,14 @@
 - 観測: 既存コーパス5件の291トラックからprimary 270曲線・12,347キーを復号した。`FirstTrack` / `TrackNextIndex` は全件を一度ずつ通る終端付きchainだった。`1000` はnon-cel folder 42/42、`2001` はstatic image 45/45、`2003` はpaper 5/5、`4000` は `PlayTime` 4/4、`4001` はaudio 4/4と対応した。`2001` の内訳はraster 42と `ResizableImageInfo` を持つresizable image 3で、全件の曲線とvalue entryが空だった。`2000` は複数の `ImageCelName` を持つ。補間、左右傾き、任意タグもキー数一致を確認した。`TrackValueMap` は全291行でrecord境界まで一致し、type 0の倍精度値とtype 2の文字列・整数値を確認した。`2000` の整数値は対応FCurve値と191/191で一致した。secondary `0110binc` の値recordは先頭fieldの `Int32[]` / `Name` / `End` metadata headerでschema記述と区別でき、後続headerはfield種別により残り2語が変化する。実値は37曲線・37キー（cel 32、audio 5）で、対応するprimaryと全フィールドが37/37で完全一致した。`4000` の4行は対象layerがtype 0のleafでtype 256のroot直下にあり、2Dカメラ用trackではないことも確認した。
 - 現在の扱い: chainを検証してnext ID、raw track kind、primaryの単精度曲線、secondaryの倍精度曲線、型付きvalue mapを公開する。`1000` / `2000` / `2001` / `2003` / `4000` / `4001` は確認済みhelperを持つ。未知value typeはpayloadを保持する。各 `Value` の単位は固定しない。従来の `CelTrack` は先頭のprimary `ImageCelName` を使う。
 - 次の調査: 2Dカメラを最小差分で比較し、secondary値recordの追加variantが得られた場合はmetadata headerと型対応を拡張する。
+- GUI検証補足: 2026-07-24に匿名文書で2Dカメラフォルダー作成コマンドまでは確認したが、GUI自動操作では階層メニューとショートカット入力のフォーカスを維持できず、作成前に中止した。文書・ショートカット設定は変更していないため、次回は手動でフォルダーを1つ作成した最小差分を使う。
 
 ## タイムラプス内部ストリーム
 
-- 状態: record/blob連結、BLOB展開、内部WebP frame索引まで対応
-- 観測: 2サンプルの9 BLOBは `WEBP` encoder、big-endian長付きzlibで、DBの圧縮・展開サイズと連続offsetが一致した。計76,799件すべてが28-byte little-endian headerとRIFF/WebPの連続recordで、長さ、1-origin sequence、`EncoderSequence`、末尾境界が一致した。FourCCは `GMIK` 3,100件と `GMID` 73,699件、先頭WebP chunkは `VP8 ` / `VP8X` だった。
-- 現在の扱い: BLOB単位の上限付き読み取り・ストリーミング展開に加え、画像payloadを保持しないframe indexを公開する。FourCC、2つのreserved値、2つの意味未確定parameter、RIFF offset・長、sequence、WebP先頭chunk・寸法を保持する。
-- 次の調査: 匿名の短時間記録で描画位置、キャンバスサイズ、操作回数、記録時間を1項目ずつ変え、`GMIK` / `GMID`、2 parameter、記録時刻・再生間隔の対応を確定する。
+- 状態: record/blob連結、BLOB展開、内部WebP key/delta frame索引まで対応
+- 観測: 2サンプルの9 BLOBは `WEBP` encoder、big-endian長付きzlibで、DBの圧縮・展開サイズと連続offsetが一致した。計76,799件すべてが28-byte little-endian headerとRIFF/WebPの連続recordで、長さ、1-origin sequence、`EncoderSequence`、末尾境界が一致した。`GMIK` 3,100件は全件full canvasで隣接間隔は最大30、`GMID` 73,699件は全件parameterを左上原点とするcanvas内patchだった。先頭WebP chunkは `VP8 ` / `VP8X` だった。
+- 現在の扱い: BLOB単位の上限付き読み取り・ストリーミング展開に加え、画像payloadを保持しないframe indexを公開する。raw FourCC、2つのreserved値、2つのraw parameter、RIFF offset・長、sequence、WebP先頭chunk・寸法を保持し、key/delta判定とdelta originも返す。
+- 次の調査: 匿名の短時間記録で描画位置、操作回数、記録時間を1項目ずつ変え、`GMIK` 側parameterと記録時刻・再生間隔の対応を確定する。
 
 ## GUI検証の運用
 

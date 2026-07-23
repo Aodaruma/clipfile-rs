@@ -43,7 +43,7 @@
 
 `timelapse` featureの `Database::time_lapse(limits)` は、manager・record・blobの連結リストを再構成し、循環、共有、欠落、canvas所有、連続offsetを検証する。各 `TimeLapseBlob` は外部ID、raw `BlobType`、圧縮・展開サイズを保持する。`ClipFile::read_time_lapse_blob` は1 BLOBだけを上限付きで確保し、`copy_time_lapse_blob` はwriterへ展開する。どちらもbig-endian長付きzlib、DBの `BlobSizeCompressed`（4-byte長を含む）、実際の展開長を照合する。
 
-`ClipFile::read_time_lapse_frame_index` はrecordの全BLOBを順に展開し、画像payloadを保持せず内部frame索引だけを返す。各frameについて28-byte little-endian record header、連番、record長、RIFF/WebP境界、先頭 `VP8 ` / `VP8X` chunkの寸法を検証する。`TimeLapseFrameKind` は `GMIK` / `GMID` をraw FourCCのまま保持し、意味未確定の2つのheader値とreserved値も捨てない。
+`ClipFile::read_time_lapse_frame_index` はrecordの全BLOBを順に展開し、画像payloadを保持せず内部frame索引だけを返す。各frameについて28-byte little-endian record header、連番、record長、RIFF/WebP境界、先頭 `VP8 ` / `VP8X` chunkの寸法を検証する。`TimeLapseFrameKind` は `GMIK` / `GMID` をraw FourCCのまま保持しつつ、full key frameとdelta patchの判定も返す。`GMID` の2つのparameterはWebP patchの配置原点として `TimeLapseFrame::delta_origin()` から取得できる。reserved値と `GMIK` 側parameterも捨てずに保持する。
 
 `Limits::max_time_lapse_blob_bytes` は1 BLOBの圧縮・展開サイズ、`Limits::max_time_lapse_items` はmanager・record・blob・frame数を制限する。record全体は数百MiBになり得るため、一括結合APIは設けない。
 
@@ -53,4 +53,4 @@
 
 `LayerType` はビットフラグとして複数用途を表し、`LayerComposite` にも将来値が追加され得る。このため `LayerKind` と `BlendMode` は閉じたenumにせず、`raw()` で元の整数を必ず返す。`is_pixel()` などは、現在確認できたビットだけを判定する補助APIである。
 
-ベクターは外部本体への安全な到達まで対応したが、線・制御点・ブラシ属性はまだ解釈しない。テキストは本文と属性レコードの境界まで対応したが、フォント・段落・変形属性は未解釈である。アニメーションはprimary/secondary mixerのFCurveとinline value map、タイムラプスは内部WebP frame索引まで対応したが、カメラ・変形の意味付け、`GMIK` / `GMID` とheader parameterの完全な意味、時刻・再生規則は未解釈である。3D、定規の詳細BLOBも同様に未解釈である。これらは元のDBへ `Database::connection()` で読み取りアクセスできるが、安定した意味モデルとしては、最小差分コーパスで検証後に追加する。
+ベクターは外部本体への安全な到達まで対応したが、線・制御点・ブラシ属性はまだ解釈しない。テキストは本文と属性レコードの境界まで対応したが、フォント・段落・変形属性は未解釈である。アニメーションはprimary/secondary mixerのFCurveとinline value map、タイムラプスはfull key frameとdelta patchを含む内部WebP frame索引まで対応したが、カメラ・変形の意味付け、`GMIK` 側parameter、時刻・再生規則は未解釈である。3D、定規の詳細BLOBも同様に未解釈である。これらは元のDBへ `Database::connection()` で読み取りアクセスできるが、安定した意味モデルとしては、最小差分コーパスで検証後に追加する。
