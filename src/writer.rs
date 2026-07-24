@@ -1271,6 +1271,10 @@ fn insert_external_index_rows(
     additions: &BTreeMap<Vec<u8>, Vec<u8>>,
     external_offsets: &BTreeMap<Vec<u8>, u64>,
 ) -> Result<()> {
+    if additions.is_empty() {
+        return Ok(());
+    }
+    let storage_class = external_identifier_storage_class(connection)?;
     for identifier in additions.keys() {
         let existing: i64 = connection.query_row(
             "SELECT count(*) FROM ExternalChunk \
@@ -1291,10 +1295,24 @@ fn insert_external_index_rows(
                     reason: "new external object has no calculated output offset".to_owned(),
                 })?;
         let offset = i64::try_from(offset).map_err(|_| Error::OffsetOverflow)?;
-        let inserted = connection.execute(
-            "INSERT INTO ExternalChunk (ExternalID, Offset) VALUES (?1, ?2)",
-            params![identifier, offset],
-        )?;
+        let inserted = match storage_class {
+            ExternalIdentifierStorageClass::Blob => connection.execute(
+                "INSERT INTO ExternalChunk (ExternalID, Offset) VALUES (?1, ?2)",
+                params![identifier, offset],
+            )?,
+            ExternalIdentifierStorageClass::Text => {
+                let identifier =
+                    std::str::from_utf8(identifier).map_err(|_| Error::InvalidWrite {
+                        reason:
+                            "new external identifier is not UTF-8 but the editable index uses TEXT"
+                                .to_owned(),
+                    })?;
+                connection.execute(
+                    "INSERT INTO ExternalChunk (ExternalID, Offset) VALUES (?1, ?2)",
+                    params![identifier, offset],
+                )?
+            }
+        };
         if inserted != 1 {
             return Err(Error::InvalidWrite {
                 reason: "new ExternalChunk index row was not inserted exactly once".to_owned(),
@@ -1302,6 +1320,35 @@ fn insert_external_index_rows(
         }
     }
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum ExternalIdentifierStorageClass {
+    Blob,
+    Text,
+}
+
+fn external_identifier_storage_class(
+    connection: &Connection,
+) -> Result<ExternalIdentifierStorageClass> {
+    let mut statement = connection.prepare(
+        "SELECT DISTINCT typeof(ExternalID) FROM ExternalChunk \
+         WHERE ExternalID IS NOT NULL ORDER BY 1",
+    )?;
+    let classes = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    match classes.as_slice() {
+        [] => Ok(ExternalIdentifierStorageClass::Blob),
+        [class] if class == "blob" => Ok(ExternalIdentifierStorageClass::Blob),
+        [class] if class == "text" => Ok(ExternalIdentifierStorageClass::Text),
+        _ => Err(Error::InvalidWrite {
+            reason: format!(
+                "ExternalChunk.ExternalID uses unsupported or mixed SQLite storage classes: {}",
+                classes.join(", ")
+            ),
+        }),
+    }
 }
 
 fn repair_external_offsets(
@@ -1787,6 +1834,41 @@ mod tests {
         assert_eq!(record.offset(), new_chunk.offset());
         rewritten.validate_external_index(&database).unwrap();
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn preserves_text_storage_for_new_external_identifiers() {
+        let source = sample();
+        let mut clip = ClipFile::open(Cursor::new(source)).unwrap();
+        let mut writer = clip.writer().unwrap();
+        writer
+            .database()
+            .connection()
+            .execute(
+                "UPDATE ExternalChunk SET ExternalID = CAST(ExternalID AS TEXT)",
+                [],
+            )
+            .unwrap();
+        writer
+            .add_external_body(NEW_EXTERNAL_ID, b"new external body".to_vec())
+            .unwrap();
+
+        let mut output = Vec::new();
+        writer.write_to(&mut output).unwrap();
+
+        let mut rewritten = ClipFile::open(Cursor::new(output)).unwrap();
+        let database = rewritten.open_database().unwrap();
+        let storage_class: String = database
+            .connection()
+            .query_row(
+                "SELECT typeof(ExternalID) FROM ExternalChunk \
+                 WHERE CAST(ExternalID AS BLOB) = ?1",
+                params![NEW_EXTERNAL_ID],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(storage_class, "text");
+        rewritten.validate_external_index(&database).unwrap();
     }
 
     #[cfg(feature = "animation")]

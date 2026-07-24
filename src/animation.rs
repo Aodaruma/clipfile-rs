@@ -1517,6 +1517,7 @@ impl<R: Read + Seek> ClipWriter<'_, R> {
         limits: Limits,
     ) -> Result<AnimationTrackCloneSummary> {
         validate_animation_track_clone_schema(self.database().schema())?;
+        let update_elem_scheme = self.database().schema().table("ElemScheme").is_some();
         let source = writable_animation_track(
             self.database().connection(),
             self.database().schema(),
@@ -1551,7 +1552,7 @@ impl<R: Read + Seek> ClipWriter<'_, R> {
             animation_clone_timeline_chain(self.database().connection(), timeline_id)?;
         let layer_uuid =
             animation_clone_layer_uuid(self.database().connection(), target_layer_id, limits)?;
-        let track_id = next_animation_track_id(self.database().connection())?;
+        let track_id = next_animation_track_id(self.database().connection(), update_elem_scheme)?;
         let track_uuid = generate_animation_track_uuid(self.database().connection(), limits)?;
         let track_columns = animation_clone_columns(self.database().schema())?;
 
@@ -1599,6 +1600,7 @@ impl<R: Read + Seek> ClipWriter<'_, R> {
                 previous_tail_id,
                 layer_uuid,
                 track_uuid,
+                update_elem_scheme,
                 primary_identifier: primary_identifier.as_deref(),
                 secondary_identifier: secondary_identifier.as_deref(),
             },
@@ -1856,6 +1858,17 @@ fn validate_animation_track_clone_schema(schema: &DatabaseSchema) -> Result<()> 
             }
         }
     }
+    if schema.table("ElemScheme").is_some() {
+        for column in ["TableName", "MaxIndex"] {
+            if !schema.has_column("ElemScheme", column) {
+                return Err(Error::InvalidWrite {
+                    reason: format!(
+                        "ElemScheme.{column} is required when cloning an animation track"
+                    ),
+                });
+            }
+        }
+    }
     Ok(())
 }
 
@@ -2046,7 +2059,10 @@ fn animation_clone_layer_uuid(
 }
 
 #[cfg(feature = "write")]
-fn next_animation_track_id(connection: &rusqlite::Connection) -> Result<i64> {
+fn next_animation_track_id(
+    connection: &rusqlite::Connection,
+    use_elem_scheme: bool,
+) -> Result<i64> {
     let (row_count, non_null_count, distinct_count): (i64, i64, i64) = connection.query_row(
         "SELECT count(*), count(MainId), count(DISTINCT MainId) FROM Track",
         [],
@@ -2065,8 +2081,33 @@ fn next_animation_track_id(connection: &rusqlite::Connection) -> Result<i64> {
     }
     let maximum: Option<i64> =
         connection.query_row("SELECT max(MainId) FROM Track", [], |row| row.get(0))?;
-    let track_id = maximum
-        .unwrap_or(0)
+    let maximum = maximum.unwrap_or(0);
+    let allocation_base = if use_elem_scheme {
+        let (row_count, max_index): (i64, Option<i64>) = connection.query_row(
+            "SELECT count(*), max(MaxIndex) FROM ElemScheme WHERE TableName = 'Track'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if row_count != 1 {
+            return Err(Error::InvalidWrite {
+                reason: format!("ElemScheme must contain exactly one Track row, found {row_count}"),
+            });
+        }
+        let max_index = max_index.ok_or_else(|| Error::InvalidWrite {
+            reason: "ElemScheme Track MaxIndex is NULL".to_owned(),
+        })?;
+        if max_index < maximum {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "ElemScheme Track MaxIndex {max_index} is below Track.MainId maximum {maximum}"
+                ),
+            });
+        }
+        max_index
+    } else {
+        maximum
+    };
+    let track_id = allocation_base
         .checked_add(1)
         .ok_or(Error::OffsetOverflow)?;
     if track_id <= 0 {
@@ -2185,6 +2226,7 @@ struct AnimationTrackCloneInsert<'a> {
     previous_tail_id: Option<i64>,
     layer_uuid: [u8; 16],
     track_uuid: [u8; 16],
+    update_elem_scheme: bool,
     primary_identifier: Option<&'a [u8]>,
     secondary_identifier: Option<&'a [u8]>,
 }
@@ -2239,6 +2281,17 @@ fn insert_animation_track_clone(
                 insertion.template_track_id
             ),
         });
+    }
+    if insertion.update_elem_scheme {
+        let updated = transaction.execute(
+            "UPDATE ElemScheme SET MaxIndex = ?1 WHERE TableName = 'Track'",
+            params![insertion.track_id],
+        )?;
+        if updated != 1 {
+            return Err(Error::InvalidWrite {
+                reason: format!("ElemScheme Track MaxIndex update affected {updated} rows"),
+            });
+        }
     }
     let changed = if let Some(previous_tail_id) = insertion.previous_tail_id {
         transaction.execute(
@@ -4681,6 +4734,8 @@ mod tests {
                  INSERT INTO Layer VALUES
                     (5, '11111111-1111-1111-1111-111111111111'),
                     (6, '22222222-2222-2222-2222-222222222222');
+                 CREATE TABLE ElemScheme (TableName TEXT, MaxIndex INTEGER);
+                 INSERT INTO ElemScheme VALUES ('Track', 1);
                  CREATE TABLE ExternalChunk (ExternalID BLOB, Offset INTEGER);",
             )
             .unwrap();
@@ -4711,9 +4766,9 @@ mod tests {
             .execute(
                 "INSERT INTO ExternalChunk VALUES (?1, ?2), (?3, ?4)",
                 params![
-                    IDENTIFIER,
+                    std::str::from_utf8(IDENTIFIER).unwrap(),
                     first_external_offset as i64,
-                    SECONDARY_IDENTIFIER,
+                    std::str::from_utf8(SECONDARY_IDENTIFIER).unwrap(),
                     second_external_offset as i64,
                 ],
             )
@@ -4984,6 +5039,18 @@ mod tests {
         assert!(row.6);
         assert!(row.7);
         assert!(row.8);
+        assert_eq!(
+            writer
+                .database()
+                .connection()
+                .query_row(
+                    "SELECT MaxIndex FROM ElemScheme WHERE TableName = 'Track'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            2
+        );
 
         assert_eq!(
             writer
@@ -5001,6 +5068,17 @@ mod tests {
         database.quick_check().unwrap();
         rewritten.validate_external_index(&database).unwrap();
         assert_eq!(database.external_chunks().unwrap().len(), 4);
+        assert_eq!(
+            database
+                .connection()
+                .query_row(
+                    "SELECT count(*) FROM ExternalChunk WHERE typeof(ExternalID) = 'text'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            4
+        );
         let animation = rewritten
             .read_animation(&database, Limits::default())
             .unwrap()

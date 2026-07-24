@@ -178,9 +178,11 @@ writer.write_to_path("new-output.clip")?;
 - `replace_animation_cel_tag`: 既存`ImageCelName` keyのTagをprimary/secondaryで同期し、現在値が同じ旧Tagを指す場合は`TrackValueMap`も同期する。
 - `clone_animation_track_from_template`: 既存Trackの全非identity列とmixer本体を複製し、未追跡layerへ割り当ててtimeline末尾へ連結する。
 
+新規external objectの索引行は、既存の`ExternalChunk.ExternalID`が使うSQLite storage class（`TEXT`または`BLOB`）を保持する。CLIP STUDIO PAINTが生成した通常のファイルでは`TEXT`であり、異なる型で追加するとcontainerとSQLite自体が妥当でもアプリが読込を拒否するためである。Track複製時は`ElemScheme`が存在する場合、Track用`MaxIndex`も同じtransaction内で更新する。
+
 curveやcelの追加・削除は行わず、BINCの未知fieldはそのまま保持する。Tag追加で展開後BINC長が変わる場合は、存在する`TrackActionMixerSize` / `TrackActionMixer2Size`も更新する。既存size列が外部本体と一致しない入力は変更前に拒否する。
 
-Track cloneは任意曲線を生成するbuilderではない。`_PW_ID`はSQLiteに再採番させ、`MainId`はTrack表の最大値+1、`TrackUuid`は衝突検査済みUUID v4を生成する。primary/secondary mixerは別々の新規 `extrnlid` UUID v4へ同じ完全bodyを複製し、展開後BINC長とsize列を事前照合する。その他の未知列はSQLiteの`INSERT ... SELECT`でstorage classごと保持する。
+Track cloneは任意曲線を生成するbuilderではない。`_PW_ID`はSQLiteに再採番させ、`MainId`はTrack表と、存在する場合は`ElemScheme`のTrack用`MaxIndex`の大きい方から次を割り当てる。`TrackUuid`は衝突検査済みUUID v4を生成する。primary/secondary mixerは別々の新規 `extrnlid` UUID v4へ同じ完全bodyを複製し、展開後BINC長とsize列を事前照合する。その他の未知列はSQLiteの`INSERT ... SELECT`でstorage classごと保持する。
 
 対象timelineは`FirstTrack`から同じ`BankId`の全Trackへ一度ずつ到達して0で終端する必要がある。cloneは既存末尾の`TrackNextIndex`へ追加し、空chainなら`TimeLine.FirstTrack`を設定する。対象layerは一意な正規化可能UUIDを持ち、既存Trackから未参照でなければならない。Track kindと対象layerの意味的互換性は推測できないため、呼出側が同種のテンプレートを選ぶ。
 
