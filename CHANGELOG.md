@@ -7,6 +7,29 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.0.0-rc.1] - 2026-07-24
+
+### Added
+
+- Template-based plain raster-layer cloning with regenerated row identities,
+  layer UUID, external IDs, tree links, CSP-compatible base pixels, and fresh
+  non-stale derived-cache references.
+- Text-object removal with synchronized primary/additional arrays and safe
+  primary-object promotion while retaining at least one object.
+- Conservative vector-stroke template cloning and removal for the validated
+  92-byte-header/88-byte-point layout, preserving all unknown fields.
+- Primary/secondary animation-curve key insertion and removal, normalized
+  image-cel Track cloning from a complete kind-2000 template, and Track
+  unlinking with timeline-chain repair.
+- Purpose-specific examples and safety documentation for each new semantic
+  write operation.
+
+### Changed
+
+- Document render-cache boundaries explicitly: raster clones invalidate
+  derived references, while vector edits and canvas previews are not
+  regenerated automatically.
+
 ## [0.5.0] - 2026-07-24
 
 ### Added
@@ -129,7 +152,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Optional offscreen metadata parsing, bounded zlib tile decoding, and raster assembly.
 - Project, canvas, layer, and cycle-checked layer-tree models.
 
-[Unreleased]: https://github.com/Aodaruma/clipfile-rs/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Aodaruma/clipfile-rs/compare/v1.0.0-rc.1...HEAD
+[1.0.0-rc.1]: https://github.com/Aodaruma/clipfile-rs/compare/v0.5.0...v1.0.0-rc.1
 [0.5.0]: https://github.com/Aodaruma/clipfile-rs/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Aodaruma/clipfile-rs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Aodaruma/clipfile-rs/compare/v0.2.0...v0.3.0

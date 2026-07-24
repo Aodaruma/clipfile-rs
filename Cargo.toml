@@ -1,6 +1,6 @@
 [package]
 name = "clipfile"
-version = "0.5.0"
+version = "1.0.0-rc.1"
 edition = "2024"
 rust-version = "1.85"
 description = "A streaming parser and toolkit for CLIP STUDIO PAINT files"
@@ -82,11 +82,19 @@ name = "invert_raster"
 required-features = ["write", "raster"]
 
 [[example]]
+name = "clone_raster_layer"
+required-features = ["write", "raster"]
+
+[[example]]
 name = "edit_text"
 required-features = ["write"]
 
 [[example]]
 name = "add_text_object"
+required-features = ["write"]
+
+[[example]]
+name = "remove_text_object"
 required-features = ["write"]
 
 [[example]]
@@ -98,11 +106,35 @@ name = "translate_vector"
 required-features = ["write"]
 
 [[example]]
+name = "clone_vector_stroke"
+required-features = ["write"]
+
+[[example]]
+name = "remove_vector_stroke"
+required-features = ["write"]
+
+[[example]]
 name = "edit_animation_cel"
 required-features = ["write", "animation"]
 
 [[example]]
 name = "clone_animation_track"
+required-features = ["write", "animation"]
+
+[[example]]
+name = "insert_animation_key"
+required-features = ["write", "animation"]
+
+[[example]]
+name = "remove_animation_key"
+required-features = ["write", "animation"]
+
+[[example]]
+name = "clone_image_cel_track"
+required-features = ["write", "animation"]
+
+[[example]]
+name = "remove_animation_track"
 required-features = ["write", "animation"]
 
 [lints.rust]

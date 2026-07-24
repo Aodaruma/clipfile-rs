@@ -44,14 +44,15 @@ Implemented:
   and
 - opt-in validated container rewriting with editable SQLite metadata,
   byte-preserving external bodies, repaired absolute offsets, CSP-compatible
-  block checksums, and conservative image/vector/text/animation edits.
+  block checksums, plain-raster-layer template cloning, text-object lifecycle,
+  vector-stroke clone/removal, and conservative animation key/track lifecycle.
 
 Not implemented yet:
 
 - semantic vector/text-attribute decoding, 3D data, or time-lapse
   playback/timestamp semantics; and
-- arbitrary object creation and full-fidelity style/stroke/track encoders for
-  raster, vector, text, animation, and other external object bodies.
+- template-free arbitrary object creation and full-fidelity style, brush,
+  raster-cache, and animation-metadata encoders.
 
 See [the format analysis](docs/format-analysis.md) and
 [the implementation plan](docs/implementation-plan.md) for the research status
@@ -208,19 +209,23 @@ repairs `ExternalChunk.Offset` and the `CHNKHead` database offset, and can
 replace a complete opaque external body. Existing block data can be
 zlib-reencoded with CSP-compatible Adler-32 checksums. With the corresponding
 features enabled, higher-level methods replace an existing raster or layer
-mask, edit text while preserving encoded character boundaries, translate a
-validated vector layout, update existing animation values, keys, and cel tags,
-and clone a complete existing Track into an untracked compatible layer with
-independent identities and mixer bodies. `write_to_path` creates a new path,
-flushes it, then reopens and validates the container, SQLite database, and
-external index. It never overwrites an existing path.
+mask and clone a plain raster layer from a compatible template. Text objects
+can be edited, template-cloned, and removed while preserving encoded
+boundaries and paired attributes. A validated vector layout supports
+translation, stroke-template cloning, and stroke removal. Existing animation
+values, curve keys, and cel tags can be edited; image-cel tracks can be
+template-cloned with a requested key sequence; and Track rows can be unlinked
+with chain repair. `write_to_path` creates a new path, flushes it, then reopens
+and validates the container, SQLite database, and external index. It never
+overwrites an existing path.
 
 This remains a conservative existing-structure editor, not an arbitrary CLIP
-document generator. Unknown top-level chunk layouts are rejected, and complete
-style, vector-stroke, and template-free animation-track creation are not
-implemented. See
+document generator. Unknown top-level chunk layouts are rejected. Complete
+style/brush synthesis, derived raster-cache generation, and template-free
+animation-track creation are not implemented. See
 [the writing guide](docs/writing.md) for the precise API boundaries and current
-guarantees.
+guarantees. [The 1.0 readiness checklist](docs/one-zero-readiness.md) records
+the stable scope, release gates, and intentionally deferred work.
 
 Treat all input as untrusted; the parser and writer validate structural bounds,
 but coverage of the full format is still incomplete.
