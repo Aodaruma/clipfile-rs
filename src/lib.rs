@@ -12,6 +12,8 @@ mod animation;
 mod cmc;
 mod container;
 #[cfg(feature = "sqlite")]
+mod correction;
+#[cfg(feature = "sqlite")]
 mod database;
 mod error;
 mod external;
@@ -38,6 +40,11 @@ pub use cmc::{CmcFile, CmcNode};
 pub use container::{
     CHUNK_HEADER_SIZE, ChunkHeader, ChunkIter, ChunkKind, ClipFile, ExternalChunkHeader,
     FileHeader, ROOT_HEADER_SIZE, RootHeader, ValidationSummary,
+};
+#[cfg(feature = "sqlite")]
+pub use correction::{
+    ColorBalanceAdjustment, Correction, CorrectionCurve, CorrectionCurvePoint,
+    CorrectionGradientPoint, CorrectionGradientStop, CorrectionLayerData, CorrectionLevel,
 };
 #[cfg(feature = "sqlite")]
 pub use database::{

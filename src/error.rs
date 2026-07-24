@@ -122,6 +122,12 @@ pub enum Error {
         /// Human-readable details.
         reason: String,
     },
+    /// Correction-layer metadata is structurally inconsistent.
+    #[cfg(feature = "sqlite")]
+    InvalidCorrection {
+        /// Human-readable details.
+        reason: String,
+    },
     /// Raster metadata or decoded pixels are structurally inconsistent.
     #[cfg(feature = "raster")]
     InvalidRaster {
@@ -223,6 +229,10 @@ impl fmt::Display for Error {
             #[cfg(feature = "sqlite")]
             Self::InvalidCmc { reason } => {
                 write!(formatter, "invalid CLIP page-management file: {reason}")
+            }
+            #[cfg(feature = "sqlite")]
+            Self::InvalidCorrection { reason } => {
+                write!(formatter, "invalid correction-layer data: {reason}")
             }
             #[cfg(feature = "raster")]
             Self::InvalidRaster { reason } => write!(formatter, "invalid raster data: {reason}"),

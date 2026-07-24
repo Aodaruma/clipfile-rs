@@ -25,6 +25,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   when every block in an external object agrees.
 - Bounded standalone `.cmc` page-management loading with validated node trees,
   raw link preservation, and traversal-safe page-path resolution.
+- Bounded decoding of all nine observed correction-layer kinds, including
+  fixed-point raw values, gradient curves, and opaque future-kind fallback.
 
 ### Documentation
 

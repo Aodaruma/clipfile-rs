@@ -32,6 +32,10 @@ all-features = true
 name = "inspect_cmc"
 required-features = ["sqlite"]
 
+[[example]]
+name = "inspect_corrections"
+required-features = ["sqlite"]
+
 [lints.rust]
 unsafe_code = "forbid"
 

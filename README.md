@@ -29,6 +29,8 @@ Implemented:
 - bounded `CanvasPreview` PNG extraction; and
 - bounded retrieval of opaque vector-layer external data; and
 - bounded UTF-8 text-layer content with opaque per-object attributes; and
+- bounded correction-layer decoding for all nine observed adjustment kinds,
+  with raw payload preservation; and
 - optional timeline, generic primary and double-precision secondary
   action-mixer curves, image-cel selection, audio/play-time curve decoding,
   and typed inline track values; and
@@ -93,6 +95,7 @@ cargo run --features raster --example inspect -- path/to/drawing.clip --raster
 cargo run --features animation --example inspect -- path/to/drawing.clip --animation
 cargo run --features timelapse --example inspect -- path/to/drawing.clip --timelapse
 cargo run --features sqlite --example inspect_cmc -- path/to/project.cmc
+cargo run --features sqlite --example inspect_corrections -- path/to/drawing.clip
 ```
 
 The optional `sqlite` feature uses a bundled SQLite build for reproducible
@@ -123,6 +126,13 @@ not interpreted until the vector-body structure is independently verified.
 with its original opaque attribute record. Length-prefixed extra-object arrays,
 total bytes, and object counts are bounded; font, paragraph, and transform
 attributes are not interpreted yet.
+
+`Database::correction_layer` validates the big-endian `FilterLayerInfo`
+section and decodes the nine observed correction kinds: brightness/contrast,
+levels, tone curves, hue/saturation/luminosity, color balance, reverse
+gradient, posterization, threshold, and gradient map. Raw fixed-point words
+and the complete source payload remain available, and future kind values use
+an opaque bounded fallback.
 
 The `animation` feature reads validated timeline ranges and resolves tracks to
 their layer UUIDs. It validates the complete `FirstTrack` / `TrackNextIndex`

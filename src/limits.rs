@@ -12,6 +12,8 @@ pub struct Limits {
     max_vector_objects: u64,
     max_text_bytes: u64,
     max_text_objects: u64,
+    max_correction_bytes: u64,
+    max_correction_items: u64,
     max_animation_bytes: u64,
     max_animation_items: u64,
     max_time_lapse_blob_bytes: u64,
@@ -87,6 +89,18 @@ impl Limits {
     #[must_use]
     pub const fn max_text_objects(&self) -> u64 {
         self.max_text_objects
+    }
+
+    /// Returns the maximum accepted size of one correction-layer payload.
+    #[must_use]
+    pub const fn max_correction_bytes(&self) -> u64 {
+        self.max_correction_bytes
+    }
+
+    /// Returns the maximum accepted count for correction channels, stops, and points.
+    #[must_use]
+    pub const fn max_correction_items(&self) -> u64 {
+        self.max_correction_items
     }
 
     /// Returns the maximum accepted encoded or decoded animation payload size.
@@ -214,6 +228,20 @@ impl Limits {
         self
     }
 
+    /// Sets the maximum accepted size of one correction-layer payload.
+    #[must_use]
+    pub const fn with_max_correction_bytes(mut self, value: u64) -> Self {
+        self.max_correction_bytes = value;
+        self
+    }
+
+    /// Sets the maximum accepted correction channel, stop, and point count.
+    #[must_use]
+    pub const fn with_max_correction_items(mut self, value: u64) -> Self {
+        self.max_correction_items = value;
+        self
+    }
+
     /// Sets the maximum accepted encoded or decoded animation payload size.
     #[must_use]
     pub const fn with_max_animation_bytes(mut self, value: u64) -> Self {
@@ -285,6 +313,8 @@ impl Default for Limits {
             max_vector_objects: 1_000_000,
             max_text_bytes: 64 * 1024 * 1024,
             max_text_objects: 1_000_000,
+            max_correction_bytes: 64 * 1024 * 1024,
+            max_correction_items: 1_000_000,
             max_animation_bytes: 256 * 1024 * 1024,
             max_animation_items: 1_000_000,
             max_time_lapse_blob_bytes: 128 * 1024 * 1024,
