@@ -1558,17 +1558,15 @@ impl<R: Read + Seek> ClipWriter<'_, R> {
 
         let mut staged = Vec::<Vec<u8>>::new();
         let primary_identifier = match primary_body {
-            Some(body) => match self.stage_new_external_body(
-                body,
-                limits.max_animation_bytes(),
-                "cloned primary animation mixer body",
-            ) {
-                Ok(identifier) => {
-                    staged.push(identifier.clone());
-                    Some(identifier)
-                }
-                Err(error) => return Err(error),
-            },
+            Some(body) => {
+                let identifier = self.stage_new_external_body(
+                    body,
+                    limits.max_animation_bytes(),
+                    "cloned primary animation mixer body",
+                )?;
+                staged.push(identifier.clone());
+                Some(identifier)
+            }
             None => None,
         };
         let secondary_identifier = match secondary_body {
