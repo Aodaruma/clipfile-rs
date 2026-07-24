@@ -9,7 +9,8 @@ use rusqlite::{Connection, MAIN_DB, params};
 
 use crate::{
     CHUNK_HEADER_SIZE, ChunkHeader, ChunkKind, ClipFile, Database, DatabaseSchema, Error,
-    ExternalChunkHeader, ROOT_HEADER_SIZE, Result,
+    ExternalBody, ExternalChunkHeader, ExternalObject, ROOT_HEADER_SIZE, Result,
+    external::rebuild_block_data_body,
 };
 
 const ROOT_MAGIC: &[u8; 8] = b"CSFCHUNK";
@@ -17,6 +18,61 @@ const FILE_HEADER_TAG: &[u8; 8] = b"CHNKHead";
 const EXTERNAL_TAG: &[u8; 8] = b"CHNKExta";
 const SQLITE_TAG: &[u8; 8] = b"CHNKSQLi";
 const FOOTER_TAG: &[u8; 8] = b"CHNKFoot";
+
+/// Checksum value to store for a block re-encoded by the writer.
+///
+/// The actual checksum algorithm remains unknown. Zero is accepted by the
+/// CLIP STUDIO PAINT version used for local compatibility testing, but callers
+/// must opt in explicitly because compatibility with other versions is not yet
+/// established.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum BlockChecksumMode {
+    /// Store zero for the modified block.
+    Zero,
+}
+
+/// Result of re-encoding one block-data payload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BlockWriteSummary {
+    block_index: u32,
+    decoded_size: u64,
+    original_compressed_size: Option<u64>,
+    compressed_size: u64,
+    original_checksum: u32,
+}
+
+impl BlockWriteSummary {
+    /// Modified block index.
+    #[must_use]
+    pub const fn block_index(self) -> u32 {
+        self.block_index
+    }
+
+    /// Validated decoded byte count.
+    #[must_use]
+    pub const fn decoded_size(self) -> u64 {
+        self.decoded_size
+    }
+
+    /// Previous compressed size, or `None` when the block was empty.
+    #[must_use]
+    pub const fn original_compressed_size(self) -> Option<u64> {
+        self.original_compressed_size
+    }
+
+    /// New zlib-compressed byte count.
+    #[must_use]
+    pub const fn compressed_size(self) -> u64 {
+        self.compressed_size
+    }
+
+    /// Opaque checksum value stored before the replacement.
+    #[must_use]
+    pub const fn original_checksum(self) -> u32 {
+        self.original_checksum
+    }
+}
 
 /// An editable, in-memory copy of a CLIP file's embedded SQLite database.
 ///
@@ -173,6 +229,79 @@ impl<R: Read + Seek> ClipWriter<'_, R> {
             });
         }
         Ok(self.external_replacements.insert(identifier.to_vec(), body))
+    }
+
+    /// Re-encodes one block from validated native decoded bytes.
+    ///
+    /// `decoded` must have exactly `channels × width × height` bytes according
+    /// to the existing block parameters. The writer preserves every other
+    /// block, status, checksum, index, and parameter record, zlib-compresses
+    /// this block, and replaces the complete external body.
+    ///
+    /// A previously empty block may be populated. Repeated calls for the same
+    /// external object build on the pending replacement. Because the checksum
+    /// algorithm is unknown, callers must explicitly choose
+    /// [`BlockChecksumMode::Zero`].
+    pub fn replace_block_bytes(
+        &mut self,
+        identifier: impl AsRef<[u8]>,
+        block_index: u32,
+        decoded: impl AsRef<[u8]>,
+        checksum_mode: BlockChecksumMode,
+    ) -> Result<BlockWriteSummary> {
+        let identifier = identifier.as_ref();
+        if identifier.len() as u64 > self.source.limits().max_identifier_size() {
+            return Err(Error::InvalidWrite {
+                reason: "replacement external identifier exceeds the safety limit".to_owned(),
+            });
+        }
+        let object = self.source_external_object(identifier)?;
+        if object.body() != ExternalBody::BlockData {
+            return Err(Error::InvalidWrite {
+                reason: "replacement external object is not block data".to_owned(),
+            });
+        }
+
+        let pending = self.external_replacements.remove(identifier);
+        let had_pending = pending.is_some();
+        let body = match pending {
+            Some(body) => body,
+            None => {
+                let limit = self.source.limits().max_write_external_body_size();
+                self.source.read_external_body(&object, limit)?
+            }
+        };
+        let replacement_checksum = match checksum_mode {
+            BlockChecksumMode::Zero => 0,
+        };
+        let limits = self.source.limits();
+        let rebuilt = rebuild_block_data_body(
+            &body,
+            block_index,
+            decoded.as_ref(),
+            replacement_checksum,
+            limits.max_blocks_per_external(),
+            limits.max_decompressed_block_size(),
+            limits.max_write_external_body_size(),
+        );
+        let rebuilt = match rebuilt {
+            Ok(rebuilt) => rebuilt,
+            Err(error) => {
+                if had_pending {
+                    self.external_replacements.insert(identifier.to_vec(), body);
+                }
+                return Err(error);
+            }
+        };
+        self.external_replacements
+            .insert(identifier.to_vec(), rebuilt.body);
+        Ok(BlockWriteSummary {
+            block_index,
+            decoded_size: rebuilt.decoded_size,
+            original_compressed_size: rebuilt.original_compressed_size,
+            compressed_size: rebuilt.compressed_size,
+            original_checksum: rebuilt.original_checksum,
+        })
     }
 
     /// Removes a pending external-body replacement.
@@ -456,6 +585,29 @@ impl<R: Read + Seek> ClipWriter<'_, R> {
         }
         Ok(())
     }
+
+    fn source_external_object(&mut self, identifier: &[u8]) -> Result<ExternalObject> {
+        let chunks = self.source.chunks().collect::<Result<Vec<_>>>()?;
+        let mut found = None;
+        for chunk in chunks {
+            if chunk.kind() != ChunkKind::External {
+                continue;
+            }
+            let object = self.source.inspect_external_chunk(&chunk)?;
+            if object.header().identifier() != identifier {
+                continue;
+            }
+            if found.is_some() {
+                return Err(Error::InvalidWrite {
+                    reason: "source contains duplicate external identifiers".to_owned(),
+                });
+            }
+            found = Some(object);
+        }
+        found.ok_or_else(|| Error::InvalidWrite {
+            reason: "replacement identifier does not exist in the source".to_owned(),
+        })
+    }
 }
 
 struct PreparedWrite {
@@ -596,15 +748,25 @@ use rusqlite::OptionalExtension;
 #[cfg(test)]
 mod tests {
     use std::{
-        io::Cursor,
+        io::{Cursor, Read},
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
 
     use super::*;
 
     const EXTERNAL_ID: &[u8] = b"extrnlid0123456789ABCDEF0123456789ABCDEF";
+    const BLOCK_BEGIN_TEST: &[u8] = b"\0B\0l\0o\0c\0k\0D\0a\0t\0a\0B\0e\0g\0i\0n\0C\0h\0u\0n\0k";
+    const BLOCK_END_TEST: &[u8] = b"\0B\0l\0o\0c\0k\0D\0a\0t\0a\0E\0n\0d\0C\0h\0u\0n\0k";
+    const BLOCK_STATUS_TEST: &[u8] = b"\0B\0l\0o\0c\0k\0S\0t\0a\0t\0u\0s";
+    const BLOCK_CHECKSUM_TEST: &[u8] = b"\0B\0l\0o\0c\0k\0C\0h\0e\0c\0k\0S\0u\0m";
 
     fn push_u64(bytes: &mut Vec<u8>, value: u64) {
+        bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn push_u32_be(bytes: &mut Vec<u8>, value: u32) {
         bytes.extend_from_slice(&value.to_be_bytes());
     }
 
@@ -617,6 +779,10 @@ mod tests {
     }
 
     fn sample() -> Vec<u8> {
+        sample_with_external_body(b"abc")
+    }
+
+    fn sample_with_external_body(body: &[u8]) -> Vec<u8> {
         let header_payload_size = 40_u64;
         let external_offset = ROOT_HEADER_SIZE + CHUNK_HEADER_SIZE + header_payload_size;
 
@@ -639,8 +805,8 @@ mod tests {
         let mut external = Vec::new();
         push_u64(&mut external, EXTERNAL_ID.len() as u64);
         external.extend_from_slice(EXTERNAL_ID);
-        push_u64(&mut external, 3);
-        external.extend_from_slice(b"abc");
+        push_u64(&mut external, body.len() as u64);
+        external.extend_from_slice(body);
         let database_offset = external_offset + CHUNK_HEADER_SIZE + external.len() as u64;
 
         let mut header = Vec::new();
@@ -659,6 +825,44 @@ mod tests {
         let file_size = bytes.len() as u64;
         bytes[8..16].copy_from_slice(&file_size.to_be_bytes());
         bytes
+    }
+
+    fn test_block_body(decoded: Option<&[u8]>, checksum: u32) -> Vec<u8> {
+        let compressed = decoded.map(|decoded| {
+            let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+            encoder.write_all(decoded).unwrap();
+            encoder.finish().unwrap()
+        });
+
+        let mut body = Vec::new();
+        let block_start = body.len();
+        push_u32_be(&mut body, 0);
+        push_u32_be(&mut body, 19);
+        body.extend_from_slice(BLOCK_BEGIN_TEST);
+        push_u32_be(&mut body, 0);
+        body.extend_from_slice(&[0, 1, 0, 0, 0, 0, 0, 2, 0, 0, 0, 2]);
+        if let Some(compressed) = &compressed {
+            push_u32_be(&mut body, 1);
+            push_u32_be(&mut body, compressed.len() as u32 + 4);
+            body.extend_from_slice(&(compressed.len() as u32).to_le_bytes());
+            body.extend_from_slice(compressed);
+        } else {
+            push_u32_be(&mut body, 0);
+        }
+        push_u32_be(&mut body, 17);
+        body.extend_from_slice(BLOCK_END_TEST);
+        let block_size = (body.len() - block_start) as u32;
+        body[block_start..block_start + 4].copy_from_slice(&block_size.to_be_bytes());
+
+        for (marker, value) in [(BLOCK_STATUS_TEST, 1_u32), (BLOCK_CHECKSUM_TEST, checksum)] {
+            push_u32_be(&mut body, (marker.len() / 2) as u32);
+            body.extend_from_slice(marker);
+            push_u32_be(&mut body, 12);
+            push_u32_be(&mut body, 1);
+            push_u32_be(&mut body, 4);
+            push_u32_be(&mut body, value);
+        }
+        body
     }
 
     fn temp_output_path() -> std::path::PathBuf {
@@ -765,6 +969,102 @@ mod tests {
             writer.write_to(&mut Vec::new()),
             Err(Error::InvalidWrite { .. })
         ));
+    }
+
+    #[test]
+    fn reencodes_one_block_and_builds_on_a_pending_replacement() {
+        let source = sample_with_external_body(&test_block_body(Some(&[1, 2, 3, 4]), 0x1234));
+        let mut clip = ClipFile::open(Cursor::new(source)).unwrap();
+        let mut writer = clip.writer().unwrap();
+
+        let first = writer
+            .replace_block_bytes(EXTERNAL_ID, 0, [4, 3, 2, 1], BlockChecksumMode::Zero)
+            .unwrap();
+        assert_eq!(first.block_index(), 0);
+        assert_eq!(first.decoded_size(), 4);
+        assert_eq!(first.original_checksum(), 0x1234);
+        assert!(first.original_compressed_size().is_some());
+        assert!(matches!(
+            writer.replace_block_bytes(EXTERNAL_ID, 0, [1, 2, 3], BlockChecksumMode::Zero),
+            Err(Error::InvalidWrite { .. })
+        ));
+        assert_eq!(writer.replacement_count(), 1);
+        let second = writer
+            .replace_block_bytes(EXTERNAL_ID, 0, [9, 8, 7, 6], BlockChecksumMode::Zero)
+            .unwrap();
+        assert_eq!(second.original_checksum(), 0);
+        assert_eq!(writer.replacement_count(), 1);
+
+        let mut output = Vec::new();
+        writer.write_to(&mut output).unwrap();
+        let mut rewritten = ClipFile::open(Cursor::new(output)).unwrap();
+        rewritten.validate().unwrap();
+        let external = rewritten
+            .chunks()
+            .find_map(|chunk| {
+                let chunk = chunk.unwrap();
+                (chunk.kind() == ChunkKind::External).then_some(chunk)
+            })
+            .unwrap();
+        let object = rewritten.inspect_external_chunk(&external).unwrap();
+        let block_data = rewritten.read_block_data(&object).unwrap();
+        let block = &block_data.blocks()[0];
+        assert_eq!(block.status(), 1);
+        assert_eq!(block.checksum(), 0);
+        let compressed = rewritten
+            .read_block_payload(block.payload().unwrap(), 1024)
+            .unwrap();
+        let mut decoder = ZlibDecoder::new(&compressed[..]);
+        let mut decoded = Vec::new();
+        decoder.read_to_end(&mut decoded).unwrap();
+        assert_eq!(decoded, [9, 8, 7, 6]);
+    }
+
+    #[test]
+    fn populates_an_empty_block() {
+        let source = sample_with_external_body(&test_block_body(None, 0x1234));
+        let mut clip = ClipFile::open(Cursor::new(source)).unwrap();
+        let mut writer = clip.writer().unwrap();
+
+        let summary = writer
+            .replace_block_bytes(EXTERNAL_ID, 0, [1, 2, 3, 4], BlockChecksumMode::Zero)
+            .unwrap();
+        assert_eq!(summary.original_compressed_size(), None);
+
+        let mut output = Vec::new();
+        writer.write_to(&mut output).unwrap();
+        let mut rewritten = ClipFile::open(Cursor::new(output)).unwrap();
+        let external = rewritten
+            .chunks()
+            .find_map(|chunk| {
+                let chunk = chunk.unwrap();
+                (chunk.kind() == ChunkKind::External).then_some(chunk)
+            })
+            .unwrap();
+        let object = rewritten.inspect_external_chunk(&external).unwrap();
+        let block_data = rewritten.read_block_data(&object).unwrap();
+        let block = &block_data.blocks()[0];
+        let compressed = rewritten
+            .read_block_payload(block.payload().unwrap(), 1024)
+            .unwrap();
+        let mut decoder = ZlibDecoder::new(&compressed[..]);
+        let mut decoded = Vec::new();
+        decoder.read_to_end(&mut decoded).unwrap();
+        assert_eq!(decoded, [1, 2, 3, 4]);
+        assert_eq!(block.checksum(), 0);
+    }
+
+    #[test]
+    fn rejects_a_block_replacement_with_the_wrong_decoded_size() {
+        let source = sample_with_external_body(&test_block_body(Some(&[1, 2, 3, 4]), 0x1234));
+        let mut clip = ClipFile::open(Cursor::new(source)).unwrap();
+        let mut writer = clip.writer().unwrap();
+
+        assert!(matches!(
+            writer.replace_block_bytes(EXTERNAL_ID, 0, [1, 2, 3], BlockChecksumMode::Zero),
+            Err(Error::InvalidWrite { .. })
+        ));
+        assert_eq!(writer.replacement_count(), 0);
     }
 
     #[test]

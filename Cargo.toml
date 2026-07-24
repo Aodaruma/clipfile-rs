@@ -24,7 +24,7 @@ sqlite = ["dep:rusqlite"]
 raster = ["sqlite", "dep:flate2"]
 animation = ["sqlite", "dep:flate2"]
 timelapse = ["sqlite", "dep:flate2"]
-write = ["sqlite"]
+write = ["sqlite", "dep:flate2"]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -44,6 +44,10 @@ required-features = ["sqlite"]
 [[example]]
 name = "rewrite"
 required-features = ["write"]
+
+[[example]]
+name = "invert_first_tile"
+required-features = ["write", "raster"]
 
 [lints.rust]
 unsafe_code = "forbid"

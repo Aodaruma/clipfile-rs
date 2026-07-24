@@ -1,5 +1,8 @@
 use std::io::{Read, Seek, SeekFrom, Write};
 
+#[cfg(feature = "write")]
+use flate2::{Compression, write::ZlibEncoder};
+
 use crate::{ChunkHeader, ClipFile, Error, ExternalChunkHeader, Result};
 
 const BLOCK_BEGIN: &[u8] = b"\0B\0l\0o\0c\0k\0D\0a\0t\0a\0B\0e\0g\0i\0n\0C\0h\0u\0n\0k";
@@ -705,6 +708,239 @@ fn ensure_file_range(file_size: u64, offset: u64, size: u64) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "write")]
+pub(crate) struct RebuiltBlockData {
+    pub(crate) body: Vec<u8>,
+    pub(crate) decoded_size: u64,
+    pub(crate) original_compressed_size: Option<u64>,
+    pub(crate) compressed_size: u64,
+    pub(crate) original_checksum: u32,
+}
+
+#[cfg(feature = "write")]
+pub(crate) fn rebuild_block_data_body(
+    body: &[u8],
+    block_index: u32,
+    decoded: &[u8],
+    replacement_checksum: u32,
+    max_blocks: u64,
+    decoded_limit: u64,
+    body_limit: u64,
+) -> Result<RebuiltBlockData> {
+    let body_size = body.len() as u64;
+    if body_size > body_limit {
+        return Err(Error::LimitExceeded {
+            resource: "source block-data body size",
+            value: body_size,
+            limit: body_limit,
+        });
+    }
+    let header = ExternalChunkHeader {
+        identifier: Box::default(),
+        body_offset: 0,
+        body_size,
+    };
+    let mut reader = std::io::Cursor::new(body);
+    let data = parse_block_data(&mut reader, &header, max_blocks)?;
+    let mut matches = data
+        .blocks()
+        .iter()
+        .filter(|block| block.index() == block_index);
+    let target = matches.next().ok_or_else(|| Error::InvalidWrite {
+        reason: format!("block-data object has no block index {block_index}"),
+    })?;
+    if matches.next().is_some() {
+        return Err(Error::InvalidWrite {
+            reason: format!("block-data object contains duplicate block index {block_index}"),
+        });
+    }
+
+    let parameters = target.parameters();
+    let expected_size = u64::from(parameters.channel_count())
+        .checked_mul(u64::from(parameters.width()))
+        .and_then(|value| value.checked_mul(u64::from(parameters.height())))
+        .ok_or(Error::OffsetOverflow)?;
+    if expected_size > decoded_limit {
+        return Err(Error::LimitExceeded {
+            resource: "replacement decoded block size",
+            value: expected_size,
+            limit: decoded_limit,
+        });
+    }
+    if decoded.len() as u64 != expected_size {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "replacement for block {block_index} has {} decoded bytes, expected {expected_size}",
+                decoded.len()
+            ),
+        });
+    }
+
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(decoded)?;
+    let compressed = encoder.finish()?;
+    let compressed_size = u64::try_from(compressed.len()).map_err(|_| Error::OffsetOverflow)?;
+    let original_compressed_size = target.payload().map(|payload| payload.compressed_size());
+    let removed_size = original_compressed_size
+        .map(|size| size.checked_add(8).ok_or(Error::OffsetOverflow))
+        .transpose()?
+        .unwrap_or(0);
+    let added_size = compressed_size
+        .checked_add(8)
+        .ok_or(Error::OffsetOverflow)?;
+    let output_size = body_size
+        .checked_sub(removed_size)
+        .and_then(|size| size.checked_add(added_size))
+        .ok_or(Error::OffsetOverflow)?;
+    if output_size > body_limit {
+        return Err(Error::LimitExceeded {
+            resource: "replacement block-data body size",
+            value: output_size,
+            limit: body_limit,
+        });
+    }
+    let output_capacity = usize::try_from(output_size).map_err(|_| Error::LimitExceeded {
+        resource: "replacement block-data body size",
+        value: output_size,
+        limit: usize::MAX as u64,
+    })?;
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(output_capacity)
+        .map_err(|_| Error::LimitExceeded {
+            resource: "replacement block-data body size",
+            value: output_size,
+            limit: body_limit,
+        })?;
+
+    for block in data.blocks() {
+        let start = output.len();
+        push_u32_be(&mut output, 0);
+        push_u32_be(&mut output, 19);
+        output.extend_from_slice(BLOCK_BEGIN);
+        push_u32_be(&mut output, block.index());
+        output.extend_from_slice(&block.parameters().raw());
+        let is_target = block.index() == block_index;
+        if is_target {
+            push_payload(&mut output, &compressed)?;
+        } else if let Some(payload) = block.payload() {
+            let payload = body_slice(body, payload.offset(), payload.compressed_size())?;
+            push_payload(&mut output, payload)?;
+        } else {
+            push_u32_be(&mut output, 0);
+        }
+        push_u32_be(&mut output, 17);
+        output.extend_from_slice(BLOCK_END);
+        let block_size = u32::try_from(output.len() - start).map_err(|_| Error::InvalidWrite {
+            reason: "serialized block exceeds the 32-bit on-disk size".to_owned(),
+        })?;
+        output[start..start + 4].copy_from_slice(&block_size.to_be_bytes());
+    }
+    push_trailer_values(
+        &mut output,
+        BLOCK_STATUS,
+        data.blocks().iter().map(Block::status),
+    )?;
+    push_trailer_values(
+        &mut output,
+        BLOCK_CHECKSUM,
+        data.blocks().iter().map(|block| {
+            if block.index() == block_index {
+                replacement_checksum
+            } else {
+                block.checksum()
+            }
+        }),
+    )?;
+    if output.len() as u64 != output_size {
+        return Err(Error::InvalidWrite {
+            reason: "serialized block-data body size calculation disagrees with output".to_owned(),
+        });
+    }
+
+    let validation_header = ExternalChunkHeader {
+        identifier: Box::default(),
+        body_offset: 0,
+        body_size: output_size,
+    };
+    let mut validation_reader = std::io::Cursor::new(&output);
+    let validated = parse_block_data(&mut validation_reader, &validation_header, max_blocks)?;
+    let validated_target = validated
+        .blocks()
+        .iter()
+        .find(|block| block.index() == block_index)
+        .ok_or_else(|| Error::InvalidWrite {
+            reason: "serialized block-data body lost the replacement block".to_owned(),
+        })?;
+    if validated_target.checksum() != replacement_checksum
+        || validated_target
+            .payload()
+            .is_none_or(|payload| !payload.has_zlib_header())
+    {
+        return Err(Error::InvalidWrite {
+            reason: "serialized replacement block failed validation".to_owned(),
+        });
+    }
+
+    Ok(RebuiltBlockData {
+        body: output,
+        decoded_size: expected_size,
+        original_compressed_size,
+        compressed_size,
+        original_checksum: target.checksum(),
+    })
+}
+
+#[cfg(feature = "write")]
+fn push_payload(output: &mut Vec<u8>, compressed: &[u8]) -> Result<()> {
+    let size = u32::try_from(compressed.len()).map_err(|_| Error::InvalidWrite {
+        reason: "compressed replacement block exceeds the 32-bit on-disk size".to_owned(),
+    })?;
+    push_u32_be(output, 1);
+    push_u32_be(output, size.checked_add(4).ok_or(Error::OffsetOverflow)?);
+    output.extend_from_slice(&size.to_le_bytes());
+    output.extend_from_slice(compressed);
+    Ok(())
+}
+
+#[cfg(feature = "write")]
+fn push_trailer_values(
+    output: &mut Vec<u8>,
+    marker: &[u8],
+    values: impl ExactSizeIterator<Item = u32>,
+) -> Result<()> {
+    let marker_chars = u32::try_from(marker.len() / 2).map_err(|_| Error::OffsetOverflow)?;
+    let count = u32::try_from(values.len()).map_err(|_| Error::InvalidWrite {
+        reason: "block trailer count exceeds the 32-bit on-disk size".to_owned(),
+    })?;
+    push_u32_be(output, marker_chars);
+    output.extend_from_slice(marker);
+    push_u32_be(output, 12);
+    push_u32_be(output, count);
+    push_u32_be(output, 4);
+    for value in values {
+        push_u32_be(output, value);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "write")]
+fn body_slice(body: &[u8], offset: u64, size: u64) -> Result<&[u8]> {
+    let start = usize::try_from(offset).map_err(|_| Error::OffsetOverflow)?;
+    let end = offset
+        .checked_add(size)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or(Error::OffsetOverflow)?;
+    body.get(start..end).ok_or_else(|| Error::InvalidWrite {
+        reason: "source block payload is outside its external body".to_owned(),
+    })
+}
+
+#[cfg(feature = "write")]
+fn push_u32_be(output: &mut Vec<u8>, value: u32) {
+    output.extend_from_slice(&value.to_be_bytes());
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
@@ -817,6 +1053,48 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn rebuilding_one_block_preserves_the_other_block_records() {
+        let untouched_payload = [0x78, 0x01, 1, 2, 3];
+        let mut bytes = Vec::new();
+        push_block(&mut bytes, 0, Some(&untouched_payload));
+        push_block(&mut bytes, 1, None);
+        push_trailer(&mut bytes, BLOCK_STATUS, &[1, 0]);
+        push_trailer(&mut bytes, BLOCK_CHECKSUM, &[0x1234, 0x5678]);
+
+        let decoded = vec![0_u8; 5 * 256 * 256];
+        let rebuilt = rebuild_block_data_body(
+            &bytes,
+            1,
+            &decoded,
+            0,
+            10,
+            decoded.len() as u64,
+            1024 * 1024,
+        )
+        .unwrap();
+        let header = ExternalChunkHeader {
+            identifier: Box::from(&b"id"[..]),
+            body_offset: 0,
+            body_size: rebuilt.body.len() as u64,
+        };
+        let mut reader = Cursor::new(&rebuilt.body);
+        let data = parse_block_data(&mut reader, &header, 10).unwrap();
+
+        let untouched = &data.blocks()[0];
+        let payload = untouched.payload().unwrap();
+        assert_eq!(
+            body_slice(&rebuilt.body, payload.offset(), payload.compressed_size()).unwrap(),
+            untouched_payload
+        );
+        assert_eq!(untouched.status(), 1);
+        assert_eq!(untouched.checksum(), 0x1234);
+        assert_eq!(data.blocks()[1].status(), 0);
+        assert_eq!(data.blocks()[1].checksum(), 0);
+        assert!(data.blocks()[1].payload().unwrap().has_zlib_header());
     }
 
     #[test]

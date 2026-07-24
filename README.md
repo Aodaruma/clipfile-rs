@@ -106,6 +106,7 @@ cargo run --features sqlite --example inspect_cmc -- path/to/project.cmc
 cargo run --features sqlite --example inspect_corrections -- path/to/drawing.clip
 cargo run --features sqlite --example inspect_rulers -- path/to/drawing.clip
 cargo run --features write --example rewrite -- input.clip new-output.clip
+cargo run --features "write,raster" --example invert_first_tile -- input.clip new-output.clip 42
 ```
 
 The optional `sqlite` feature uses a bundled SQLite build for reproducible
@@ -200,14 +201,19 @@ Unknown and bit-packed layouts return an explicit unsupported-format error.
 The opt-in `write` feature provides `ClipFile::writer`. It clones the embedded
 SQLite database into writable memory, preserves unchanged external bodies,
 repairs `ExternalChunk.Offset` and the `CHNKHead` database offset, and can
-replace a complete opaque external body. `write_to_path` creates a new path,
-flushes it, then reopens and validates the container, SQLite database, and
-external index. It never overwrites an existing path.
+replace a complete opaque external body. For an existing block-data object,
+`replace_block_bytes` can also zlib-reencode one validated native tile while
+preserving the other blocks and metadata. Because the checksum algorithm is
+unknown, this narrower API requires explicit opt-in to the locally verified
+zero-checksum compatibility mode. `write_to_path` creates a new path, flushes
+it, then reopens and validates the container, SQLite database, and external
+index. It never overwrites an existing path.
 
-This is a conservative low-level writer, not yet a semantic image or animation
-encoder. Unknown top-level chunk layouts are rejected, and callers replacing
-an external body must also make any related SQLite size or metadata changes.
-See [the writing guide](docs/writing.md) for the API and current guarantees.
+This is a conservative low-level writer, not a general semantic image or
+animation encoder. Unknown top-level chunk layouts are rejected, and callers
+replacing an external body must also make any related SQLite size or metadata
+changes. See [the writing guide](docs/writing.md) for the API and current
+guarantees.
 
 Treat all input as untrusted; the parser and writer validate structural bounds,
 but coverage of the full format is still incomplete.

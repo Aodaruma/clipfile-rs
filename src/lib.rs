@@ -83,4 +83,6 @@ pub use timelapse::{
 #[cfg(feature = "sqlite")]
 pub use vector::VectorDataSource;
 #[cfg(feature = "write")]
-pub use writer::{ClipWriter, EditableDatabase, WriteSummary};
+pub use writer::{
+    BlockChecksumMode, BlockWriteSummary, ClipWriter, EditableDatabase, WriteSummary,
+};

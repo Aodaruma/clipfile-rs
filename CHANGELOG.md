@@ -12,6 +12,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Opt-in `write` support with an editable in-memory SQLite database, exact
   no-change round trips, external-body replacement, offset repair, and
   create-new output validation.
+- Validated re-encoding of one existing block-data tile with an explicit
+  zero-checksum compatibility opt-in and a small raster-editing example.
 
 ### Fixed
 

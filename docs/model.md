@@ -15,14 +15,14 @@
 - `Camera2DLayerData` / `Camera2DTransform` / `Camera2DTrackValues`: 2Dカメラfolder、現在transform snapshot、軸付きcurveと保存位置のtrack値
 - `TimeLapse` / `TimeLapseManager` / `TimeLapseRecord` / `TimeLapseBlob` / `TimeLapseFrame`: canvasごとの記録、連続BLOB、内部WebP frame索引
 - `CmcFile` / `CmcNode`: standalone `.cmc` のProject metadata、検証済みページtree、raw・安全解決済みページ参照
-- `ClipWriter` / `EditableDatabase` / `WriteSummary`: 新規出力へ限定した低レベル再構築、書き込み可能SQLite複製、結果のサイズ・offset
+- `ClipWriter` / `EditableDatabase` / `WriteSummary` / `BlockWriteSummary`: 新規出力へ限定した低レベル再構築、書き込み可能SQLite複製、既存BlockData tileの限定的な再圧縮、結果のサイズ・offset
 - `Layer`: 名前、種類、合成、可視性、不透明度、ロック、クリッピング、マスク、兄弟・子・Mipmap参照
 - `LayerTree`: ルートから再構成した子IDの順序と、到達不能なレイヤーID
 - `Document`: 上記の所有とID検索
 
 `LayerTree` は再帰型ではなく、`children_of(layer_id)` で順序付きの子IDを返す。これにより、敵対的な深い入力をRustのコールスタックへ載せず、利用者も再帰・反復のどちらかを選べる。
 
-`write` featureの`ClipFile::writer()`は、strict validation後の埋め込みSQLiteをprivateな書き込み可能DBへ複製する。利用者は`EditableDatabase::connection`で明示的にSQLを実行できる。再構築時は未知のSQLite列と変更しない外部本体を保持し、`CHNKHead`のSQLite位置と全`ExternalChunk.Offset`を修復する。`write_to_path`は既存パスを上書きせず、新規出力をflush・同期・再オープンしてcontainer、SQLite、external indexを検証する。semantic external-body encoderではないため、完全な不透明本体の差し替えだけを提供する。詳細は[書き込みガイド](writing.md)を参照する。
+`write` featureの`ClipFile::writer()`は、strict validation後の埋め込みSQLiteをprivateな書き込み可能DBへ複製する。利用者は`EditableDatabase::connection`で明示的にSQLを実行できる。再構築時は未知のSQLite列と変更しない外部本体を保持し、`CHNKHead`のSQLite位置と全`ExternalChunk.Offset`を修復する。`write_to_path`は既存パスを上書きせず、新規出力をflush・同期・再オープンしてcontainer、SQLite、external indexを検証する。完全な不透明本体差し替えに加え、`replace_block_bytes`は既存BlockDataの1ブロックだけをnative byte列から再圧縮する。チェックサムは未解明のため `BlockChecksumMode::Zero` の明示が必要であり、一般的なsemantic encoderではない。詳細は[書き込みガイド](writing.md)を参照する。
 
 `CmcFile::open(path, limits)` は、`.clip` の `CSFCHUNK` 内部DBとは別のstandalone SQLiteである `.cmc` を読み取る。Projectが1行であること、CanvasNodeの正の一意ID、全child/sibling/selected参照、循環、複数親、rootからの到達性を検証する。`CmcFile::from_reader` も利用できるが、元ディレクトリがないため `page_path` は返さない。未知の `LinkPath` は保持し、観測済み `.:name` 形式かつディレクトリ区切りや親移動を含まない場合だけページファイル名・パスへ解決する。
 
