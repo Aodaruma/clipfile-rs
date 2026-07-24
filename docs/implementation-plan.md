@@ -62,7 +62,7 @@ SQLite連携は `sqlite` featureとして切り離して実装した。
 
 公開型は `DecodedTile` と `RasterImage` を分け、巨大画像を一括確保したくない利用者はタイル単位で処理できる。画像全体の確保量と1タイルの展開量は別々の `Limits` で制限する。現在は観測・検証できた8-bitの `(alpha, BGRA)` と1チャンネル配置を対象とし、1-bitや未知配置は明示的な未対応エラーにする。`image` crateとの変換は将来別featureへ分離できる。
 
-ローカルコーパスでは5ファイル、19,437件の `Offscreen.Attribute` を全件解析し、各ファイルから少なくとも1つの実在ラスターレイヤーをRGBAへ展開した。DB参照なし・外部チャンク欠落・実データありは `RasterDataState` で区別する。
+ローカルコーパスでは5ファイル、19,437件の `Offscreen.Attribute` を全件解析し、各ファイルから少なくとも1つの実在ラスターレイヤーをRGBAへ展開した。全外部参照列のうち索引に存在しないIDは `Offscreen.BlockData` の14,144件だけで、すべて属性の既定値だけを使うスパース画像と確認した。DB参照なし・外部チャンク欠落・実データありは `RasterDataState` で区別し、前2状態は `is_default_filled()`、実データは `is_present()` で判定できる。
 
 ### 5. `model` — 実装済み
 

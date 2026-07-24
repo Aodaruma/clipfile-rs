@@ -19,6 +19,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   observed folder, static-image, paper, play-time, and audio track kinds.
 - Sparse double-precision `FCurve` decoding for validated secondary
   action-mixer value records.
+- Raster-state helpers for distinguishing default-filled images from decoded
+  external block data.
 
 ## [0.2.0] - 2026-07-23
 

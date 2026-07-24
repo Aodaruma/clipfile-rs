@@ -218,6 +218,21 @@ pub enum RasterDataState {
     Present,
 }
 
+impl RasterDataState {
+    /// Whether the raster consists only of the `Offscreen.Attribute`
+    /// default fill because no external block-data object was resolved.
+    #[must_use]
+    pub const fn is_default_filled(self) -> bool {
+        matches!(self, Self::MissingReference | Self::MissingExternalChunk)
+    }
+
+    /// Whether an external block-data object was found and decoded.
+    #[must_use]
+    pub const fn is_present(self) -> bool {
+        matches!(self, Self::Present)
+    }
+}
+
 /// One zlib-decoded tile in the format's native channel arrangement.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecodedTile {
@@ -1037,6 +1052,16 @@ mod tests {
         assert_eq!(mask.offscreen_id(), 2000);
         assert!(database.layer_mask_raster_source(2).unwrap().is_none());
         assert!(database.layer_mask_raster_source(999).unwrap().is_none());
+    }
+
+    #[test]
+    fn classifies_raster_data_states() {
+        assert!(RasterDataState::MissingReference.is_default_filled());
+        assert!(RasterDataState::MissingExternalChunk.is_default_filled());
+        assert!(!RasterDataState::Present.is_default_filled());
+        assert!(!RasterDataState::MissingReference.is_present());
+        assert!(!RasterDataState::MissingExternalChunk.is_present());
+        assert!(RasterDataState::Present.is_present());
     }
 
     #[test]
