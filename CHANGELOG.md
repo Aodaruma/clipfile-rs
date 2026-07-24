@@ -22,6 +22,11 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Raster-state helpers for distinguishing default-filled images from decoded
   external block data.
 
+### Documentation
+
+- Clarify that observed time-lapse streams encode frame order but no
+  recoverable wall-clock timestamp.
+
 ## [0.2.0] - 2026-07-23
 
 ### Added

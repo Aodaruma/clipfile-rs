@@ -68,10 +68,12 @@
 
 ## タイムラプス内部ストリーム
 
-- 状態: record/blob連結、BLOB展開、内部WebP key/delta frame索引まで対応
+- 状態: record/blob連結、BLOB展開、内部WebP key/delta frame索引、記録順序まで対応
 - 観測: 2サンプルの9 BLOBは `WEBP` encoder、big-endian長付きzlibで、DBの圧縮・展開サイズと連続offsetが一致した。計76,799件すべてが28-byte little-endian headerとRIFF/WebPの連続recordで、長さ、1-origin sequence、`EncoderSequence`、末尾境界が一致した。`GMIK` 3,100件は全件full canvasで隣接間隔は最大30、`GMID` 73,699件は全件parameterを左上原点とするcanvas内patchだった。先頭WebP chunkは `VP8 ` / `VP8X` だった。
+- 時刻の結論: 3つのタイムラプス表に時刻・間隔列はなく、headerのreserved値も全件0だった。ファイルが保持するのはrecord順序であり、wall-clock時刻や休止時間は復元できない。動画長は書き出し時にアプリ側で選択されるため、sequenceから実時間を推測しない。
+- `GMIK` parameter: 直前・直後deltaとの原点一致は約18%、patch内率も約30%に留まった。先頭58 key間の画素差分でも変化領域原点との一致はなく、parameter位置が実際に変化したのは33件だったため、意味を固定できない。
 - 現在の扱い: BLOB単位の上限付き読み取り・ストリーミング展開に加え、画像payloadを保持しないframe indexを公開する。raw FourCC、2つのreserved値、2つのraw parameter、RIFF offset・長、sequence、WebP先頭chunk・寸法を保持し、key/delta判定とdelta originも返す。
-- 次の調査: 匿名の短時間記録で描画位置、操作回数、記録時間を1項目ずつ変え、`GMIK` 側parameterと記録時刻・再生間隔の対応を確定する。
+- 次の調査: 匿名の短時間記録で描画位置と操作種別を1項目ずつ変え、`GMIK` 側parameterだけを比較する。
 
 ## GUI検証の運用
 

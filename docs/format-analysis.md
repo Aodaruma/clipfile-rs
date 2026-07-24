@@ -220,14 +220,17 @@ blobの `BlobOffset` はrecord内で0から隙間なく連続し、`BlobSizeComp
 
 `GMIK` 3,100件は全件が2,304×1,296のキャンバス全体を持ち、隣接 `GMIK` のsequence差は1〜30、30が2,170件だった。`GMID` 73,699件は全件で `parameter_a + width <= canvas_width` かつ `parameter_b + height <= canvas_height` を満たした。このためKを定期的なfull key frame、Dを `parameter_a/b` が左上配置座標となるdelta patchと確定した。`GMIK` のparameterも全件がキャンバス内座標だったが、full imageの配置原点ではないため意味はまだ固定しない。公開APIは画像payloadを保持せず構造を検証し、raw FourCC、raw parameter、RIFF offset・長、sequence、先頭chunk、寸法に加え、key/delta判定とdelta originを返す。
 
+`GMIK` parameterと直前・直後の `GMID` を全件比較しても、原点の完全一致はそれぞれ約18%、parameterがpatch内に入る割合は約33%・30%で、隣接patchの配置座標ではなかった。さらに各サンプル先頭30 key frameをWebP復号し、直前までのdelta適用結果との差分を比較したが、parameterは変化領域の原点と一致せず、parameter位置の画素変化も33/58件に留まった。したがってraw値は保持するが、カーソルや更新矩形と推測したhelperは設けない。
+
+`TimeLapseManager` / `TimeLapseRecord` / `TimeLapseBlob` の全列に時刻・間隔列はなく、内部headerの2つのreserved値も76,799件すべて0だった。復元できるのは欠番のないrecord順序だけで、作業時刻や休止時間はファイルから得られない。公式マニュアルでも動画長は15秒・30秒・60秒・全体から書き出し時に選ぶ仕様であるため、wall-clock timestampを推測してAPIへ追加しない（[CLIP STUDIO PAINT Timelapse manual](https://help.clip-studio.com/en-us/manual_en/210_file/Timelapse.htm)）。
+
 ## 未解明・未確認事項
 
 - `BlockStatus` 値の意味とチェックサムアルゴリズム
 - 1-bit、異なるタイル寸法・追加チャンネル配置
 - ベクター本体、テキスト属性、3D、定規、特殊レイヤーの完全な意味
-- カメラ・変形、タイムラプスの `GMIK` parameter・時刻規則の完全な意味
+- カメラ・変形、タイムラプスの `GMIK` parameterの完全な意味
 - `.cmc` の外側構造と複数ページ参照
-- DBから参照されるが `ExternalChunk` に存在しない外部IDの意味
 - アプリケーションのバージョン間での完全なスキーマ移行規則
 - 安全な書き戻しに必要な全整合性条件
 

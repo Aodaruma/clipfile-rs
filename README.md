@@ -139,8 +139,9 @@ retaining image payloads and validates the internal 28-byte records,
 one-based sequence, RIFF/WebP boundaries, and observed VP8 dimensions.
 `GMIK` records are exposed as full-canvas key frames, while `GMID` records
 provide their validated delta-patch destination origin. The raw parameters
-remain available because their `GMIK` meaning and the real-time playback
-mapping are not independently verified.
+remain available because their `GMIK` meaning is not independently verified.
+The embedded tables and frame headers contain a contiguous sequence but no
+wall-clock timestamp, so the API does not invent real-time playback metadata.
 
 The `raster` feature builds on `sqlite`. It resolves a layer render, layer
 mask, or mipmap to its base offscreen data, supports bounded tile-by-tile

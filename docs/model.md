@@ -45,6 +45,8 @@
 
 `ClipFile::read_time_lapse_frame_index` はrecordの全BLOBを順に展開し、画像payloadを保持せず内部frame索引だけを返す。各frameについて28-byte little-endian record header、連番、record長、RIFF/WebP境界、先頭 `VP8 ` / `VP8X` chunkの寸法を検証する。`TimeLapseFrameKind` は `GMIK` / `GMID` をraw FourCCのまま保持しつつ、full key frameとdelta patchの判定も返す。`GMID` の2つのparameterはWebP patchの配置原点として `TimeLapseFrame::delta_origin()` から取得できる。reserved値と `GMIK` 側parameterも捨てずに保持する。
 
+確認済みのタイムラプスDB列と内部frame headerにはwall-clock timestampや記録間隔がなく、sequenceだけが記録順を表す。書き出し動画長はアプリ側で別途選択されるため、Rust APIはsequenceを実時間へ変換しない。
+
 ラスターデータの外部IDが `ExternalChunk` にない場合は、`Offscreen.Attribute` の既定値だけで画像を組み立てる。`RasterDataState::MissingReference` と `MissingExternalChunk` はDB上の記録差を保持しつつ、どちらも `is_default_filled()` が真になる。外部blockを復号した `Present` だけが `is_present()` を返す。
 
 `Limits::max_time_lapse_blob_bytes` は1 BLOBの圧縮・展開サイズ、`Limits::max_time_lapse_items` はmanager・record・blob・frame数を制限する。record全体は数百MiBになり得るため、一括結合APIは設けない。
@@ -55,4 +57,4 @@
 
 `LayerType` はビットフラグとして複数用途を表し、`LayerComposite` にも将来値が追加され得る。このため `LayerKind` と `BlendMode` は閉じたenumにせず、`raw()` で元の整数を必ず返す。`is_pixel()` などは、現在確認できたビットだけを判定する補助APIである。
 
-ベクターは外部本体への安全な到達まで対応したが、線・制御点・ブラシ属性はまだ解釈しない。テキストは本文と属性レコードの境界まで対応したが、フォント・段落・変形属性は未解釈である。アニメーションはprimary/secondary mixerのFCurveとinline value map、タイムラプスはfull key frameとdelta patchを含む内部WebP frame索引まで対応したが、カメラ・変形の意味付け、`GMIK` 側parameter、時刻・再生規則は未解釈である。3D、定規の詳細BLOBも同様に未解釈である。これらは元のDBへ `Database::connection()` で読み取りアクセスできるが、安定した意味モデルとしては、最小差分コーパスで検証後に追加する。
+ベクターは外部本体への安全な到達まで対応したが、線・制御点・ブラシ属性はまだ解釈しない。テキストは本文と属性レコードの境界まで対応したが、フォント・段落・変形属性は未解釈である。アニメーションはprimary/secondary mixerのFCurveとinline value map、タイムラプスはfull key frameとdelta patchを含む内部WebP frame索引まで対応したが、カメラ・変形の意味付けと `GMIK` 側parameterは未解釈である。タイムラプスの実時間はファイルに存在しないため復元対象にしない。3D、定規の詳細BLOBも同様に未解釈である。これらは元のDBへ `Database::connection()` で読み取りアクセスできるが、安定した意味モデルとしては、最小差分コーパスで検証後に追加する。
