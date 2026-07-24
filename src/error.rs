@@ -116,6 +116,12 @@ pub enum Error {
         /// Human-readable details.
         reason: String,
     },
+    /// A standalone `.cmc` page-management database is inconsistent.
+    #[cfg(feature = "sqlite")]
+    InvalidCmc {
+        /// Human-readable details.
+        reason: String,
+    },
     /// Raster metadata or decoded pixels are structurally inconsistent.
     #[cfg(feature = "raster")]
     InvalidRaster {
@@ -213,6 +219,10 @@ impl fmt::Display for Error {
             #[cfg(feature = "sqlite")]
             Self::InvalidDocument { reason } => {
                 write!(formatter, "invalid CLIP document model: {reason}")
+            }
+            #[cfg(feature = "sqlite")]
+            Self::InvalidCmc { reason } => {
+                write!(formatter, "invalid CLIP page-management file: {reason}")
             }
             #[cfg(feature = "raster")]
             Self::InvalidRaster { reason } => write!(formatter, "invalid raster data: {reason}"),

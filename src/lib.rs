@@ -8,6 +8,8 @@
 
 #[cfg(feature = "animation")]
 mod animation;
+#[cfg(feature = "sqlite")]
+mod cmc;
 mod container;
 #[cfg(feature = "sqlite")]
 mod database;
@@ -31,6 +33,8 @@ pub use animation::{
     AnimationTrackValue, AnimationTrackValueEntry, CelKeyframe, CelTrack, SecondaryAnimationCurve,
     SecondaryAnimationCurveKeyframe, Timeline,
 };
+#[cfg(feature = "sqlite")]
+pub use cmc::{CmcFile, CmcNode};
 pub use container::{
     CHUNK_HEADER_SIZE, ChunkHeader, ChunkIter, ChunkKind, ClipFile, ExternalChunkHeader,
     FileHeader, ROOT_HEADER_SIZE, RootHeader, ValidationSummary,

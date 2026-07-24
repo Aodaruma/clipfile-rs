@@ -23,6 +23,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   external block data.
 - Common opaque block-status reporting through `BlockData::uniform_status`
   when every block in an external object agrees.
+- Bounded standalone `.cmc` page-management loading with validated node trees,
+  raw link preservation, and traversal-safe page-path resolution.
 
 ### Documentation
 

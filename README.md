@@ -4,7 +4,8 @@
 [![crates.io](https://img.shields.io/crates/v/clipfile.svg)](https://crates.io/crates/clipfile)
 [![docs.rs](https://docs.rs/clipfile/badge.svg)](https://docs.rs/clipfile)
 
-An experimental Rust parser and toolkit for CLIP STUDIO PAINT `.clip` files.
+An experimental Rust parser and toolkit for CLIP STUDIO PAINT `.clip` and
+`.cmc` files.
 
 The file format is proprietary and does not have a public official
 specification. The crate therefore begins with a small, conservative API for
@@ -23,6 +24,7 @@ Implemented:
 - block indexing without loading compressed tile payloads;
 - common opaque block-status reporting for observed uniform containers;
 - optional, read-only SQLite access with runtime schema discovery; and
+- validated standalone `.cmc` page-management trees and safe page links; and
 - high-level project, canvas, layer, and validated layer-tree models; and
 - bounded `CanvasPreview` PNG extraction; and
 - bounded retrieval of opaque vector-layer external data; and
@@ -37,8 +39,7 @@ Implemented:
 Not implemented yet:
 
 - semantic vector/text-attribute decoding, camera/transform semantics beyond
-  exposed animation curves, time-lapse playback/timestamp semantics, or `.cmc`
-  support; and
+  exposed animation curves, or time-lapse playback/timestamp semantics; and
 - writing or modifying files.
 
 See [the format analysis](docs/format-analysis.md) and
@@ -91,12 +92,20 @@ cargo run --features sqlite --example inspect -- path/to/drawing.clip --document
 cargo run --features raster --example inspect -- path/to/drawing.clip --raster
 cargo run --features animation --example inspect -- path/to/drawing.clip --animation
 cargo run --features timelapse --example inspect -- path/to/drawing.clip --timelapse
+cargo run --features sqlite --example inspect_cmc -- path/to/project.cmc
 ```
 
 The optional `sqlite` feature uses a bundled SQLite build for reproducible
 linking across supported platforms. It provides `ClipFile::open_database`,
 runtime table/column discovery, integrity checking, and cross-validation of
 the `ExternalChunk` index.
+
+The same feature provides `CmcFile::open` for standalone page-management
+files. It validates the `Project` row, the complete `CanvasNode` child/sibling
+tree, positive and existing references, cycles, multiple parents, reachability,
+and a configurable node limit. Observed `.:page.clip` links can be resolved
+relative to the `.cmc` directory; unknown or traversal-capable link forms stay
+available as raw text but are not converted into filesystem paths.
 
 With the same feature, `ClipFile::read_document` builds a `Document` with
 project/canvas metadata, core layer properties, mipmap references, and a

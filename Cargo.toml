@@ -28,6 +28,10 @@ timelapse = ["sqlite", "dep:flate2"]
 [package.metadata.docs.rs]
 all-features = true
 
+[[example]]
+name = "inspect_cmc"
+required-features = ["sqlite"]
+
 [lints.rust]
 unsafe_code = "forbid"
 

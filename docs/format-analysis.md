@@ -226,13 +226,20 @@ blobの `BlobOffset` はrecord内で0から隙間なく連続し、`BlobSizeComp
 
 `TimeLapseManager` / `TimeLapseRecord` / `TimeLapseBlob` の全列に時刻・間隔列はなく、内部headerの2つのreserved値も76,799件すべて0だった。復元できるのは欠番のないrecord順序だけで、作業時刻や休止時間はファイルから得られない。公式マニュアルでも動画長は15秒・30秒・60秒・全体から書き出し時に選ぶ仕様であるため、wall-clock timestampを推測してAPIへ追加しない（[CLIP STUDIO PAINT Timelapse manual](https://help.clip-studio.com/en-us/manual_en/210_file/Timelapse.htm)）。
 
+## `.cmc` ページ管理
+
+匿名生成した8ページ作品1件と、公開参考実装に含まれるアニメーション・同人誌・漫画・Webtoonの4件を比較した。5件とも `CSFCHUNK` ではなく、先頭から通常のSQLite 3データベースだった。共通する実体テーブルは `Project`、`CanvasNode`、`ElemScheme`、`ParamScheme` である。
+
+`Project` は全件1行で、`ProjectInternalVersion`、`ProjectRootCanvasNode`、`MaxCanvasFileIndex` と作品設定を持つ。`CanvasNode` はroot 1件とページ参照からなり、検証した範囲ではrootが `Type=0`、ページが `Type=2` だった。`FirstChildIndex` と `NextIndex` はページの格納順とは独立した木・兄弟chainを形成し、5件の全31ノードを欠落・重複・循環なくrootから到達できた。
+
+ページの `LinkPath` は全件 `.:pageNNNN.clip` 形式で、`.cmc` と同じディレクトリにある `.clip` を参照した。公開APIの `CmcFile` はSQLiteサイズとノード数を制限し、Project 1行、正の一意ID、全参照、循環、複数親、rootからの到達性を検証する。`CmcNode::raw_link_path` は未知形式を保持し、`page_file_name` / `CmcFile::page_path` は区切り・絶対指定・親移動を含まない観測済み `.:name` 形式だけを解決する。
+
 ## 未解明・未確認事項
 
 - `BlockStatus` 値の意味とチェックサムアルゴリズム
 - 1-bit、異なるタイル寸法・追加チャンネル配置
 - ベクター本体、テキスト属性、3D、定規、特殊レイヤーの完全な意味
 - カメラ・変形、タイムラプスの `GMIK` parameterの完全な意味
-- `.cmc` の外側構造と複数ページ参照
 - アプリケーションのバージョン間での完全なスキーマ移行規則
 - 安全な書き戻しに必要な全整合性条件
 

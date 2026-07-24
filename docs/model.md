@@ -11,11 +11,14 @@
 - `TextLayerData` / `TextObjectData`: UTF-8本文、所有レイヤー、形式値、オブジェクト別の不透明な属性
 - `Animation` / `Timeline` / `AnimationTrack` / `AnimationCurve` / `AnimationTrackValueEntry` / `CelTrack`: 再生範囲、fps、raw track kind、レイヤー対応、汎用FCurve、現在値、セル選択キー
 - `TimeLapse` / `TimeLapseManager` / `TimeLapseRecord` / `TimeLapseBlob` / `TimeLapseFrame`: canvasごとの記録、連続BLOB、内部WebP frame索引
+- `CmcFile` / `CmcNode`: standalone `.cmc` のProject metadata、検証済みページtree、raw・安全解決済みページ参照
 - `Layer`: 名前、種類、合成、可視性、不透明度、ロック、クリッピング、マスク、兄弟・子・Mipmap参照
 - `LayerTree`: ルートから再構成した子IDの順序と、到達不能なレイヤーID
 - `Document`: 上記の所有とID検索
 
 `LayerTree` は再帰型ではなく、`children_of(layer_id)` で順序付きの子IDを返す。これにより、敵対的な深い入力をRustのコールスタックへ載せず、利用者も再帰・反復のどちらかを選べる。
+
+`CmcFile::open(path, limits)` は、`.clip` の `CSFCHUNK` 内部DBとは別のstandalone SQLiteである `.cmc` を読み取る。Projectが1行であること、CanvasNodeの正の一意ID、全child/sibling/selected参照、循環、複数親、rootからの到達性を検証する。`CmcFile::from_reader` も利用できるが、元ディレクトリがないため `page_path` は返さない。未知の `LinkPath` は保持し、観測済み `.:name` 形式かつディレクトリ区切りや親移動を含まない場合だけページファイル名・パスへ解決する。
 
 ## 検証
 

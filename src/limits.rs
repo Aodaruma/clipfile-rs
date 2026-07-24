@@ -16,6 +16,7 @@ pub struct Limits {
     max_animation_items: u64,
     max_time_lapse_blob_bytes: u64,
     max_time_lapse_items: u64,
+    max_cmc_nodes: u64,
     max_layers: u64,
     max_layer_tree_depth: u64,
     max_canvas_dimension: u32,
@@ -110,6 +111,12 @@ impl Limits {
     #[must_use]
     pub const fn max_time_lapse_items(&self) -> u64 {
         self.max_time_lapse_items
+    }
+
+    /// Returns the maximum number of nodes accepted from one `.cmc` file.
+    #[must_use]
+    pub const fn max_cmc_nodes(&self) -> u64 {
+        self.max_cmc_nodes
     }
 
     /// Returns the maximum number of layers accepted by the document model.
@@ -235,6 +242,13 @@ impl Limits {
         self
     }
 
+    /// Sets the maximum number of nodes accepted from one `.cmc` file.
+    #[must_use]
+    pub const fn with_max_cmc_nodes(mut self, value: u64) -> Self {
+        self.max_cmc_nodes = value;
+        self
+    }
+
     /// Sets the maximum number of layers accepted by the document model.
     #[must_use]
     pub const fn with_max_layers(mut self, value: u64) -> Self {
@@ -275,6 +289,7 @@ impl Default for Limits {
             max_animation_items: 1_000_000,
             max_time_lapse_blob_bytes: 128 * 1024 * 1024,
             max_time_lapse_items: 1_000_000,
+            max_cmc_nodes: 1_000_000,
             max_layers: 1_000_000,
             max_layer_tree_depth: 4_096,
             max_canvas_dimension: 1_000_000,
