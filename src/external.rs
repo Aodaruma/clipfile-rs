@@ -216,6 +216,20 @@ impl BlockData {
         &self.blocks
     }
 
+    /// Returns the common opaque `BlockStatus` value when every block agrees.
+    ///
+    /// The observed files store a single value across every block in one
+    /// external object, but the value's semantic meaning remains unknown.
+    /// Empty or mixed-status objects return `None`.
+    #[must_use]
+    pub fn uniform_status(&self) -> Option<u32> {
+        let first = self.blocks.first()?.status;
+        self.blocks
+            .iter()
+            .all(|block| block.status == first)
+            .then_some(first)
+    }
+
     /// Number of blocks with compressed data.
     #[must_use]
     pub fn present_blocks(&self) -> usize {
@@ -761,6 +775,26 @@ mod tests {
         assert_eq!(data.blocks()[0].status(), 1);
         assert_eq!(data.blocks()[0].checksum(), 0x1234);
         assert!(data.blocks()[1].payload().is_none());
+        assert_eq!(data.uniform_status(), None);
+    }
+
+    #[test]
+    fn reports_a_uniform_opaque_status() {
+        let mut bytes = Vec::new();
+        push_block(&mut bytes, 0, Some(&[0x78, 0x01]));
+        push_block(&mut bytes, 1, None);
+        push_trailer(&mut bytes, BLOCK_STATUS, &[0, 0]);
+        push_trailer(&mut bytes, BLOCK_CHECKSUM, &[1, 0]);
+        let size = bytes.len() as u64;
+        let mut reader = Cursor::new(bytes);
+        let header = ExternalChunkHeader {
+            identifier: Box::from(&b"id"[..]),
+            body_offset: 0,
+            body_size: size,
+        };
+
+        let data = parse_block_data(&mut reader, &header, 10).unwrap();
+        assert_eq!(data.uniform_status(), Some(0));
     }
 
     #[test]

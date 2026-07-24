@@ -21,6 +21,7 @@ Implemented:
 - parsing of file and external-object headers;
 - classification of block data, length-prefixed zlib streams, and audio;
 - block indexing without loading compressed tile payloads;
+- common opaque block-status reporting for observed uniform containers;
 - optional, read-only SQLite access with runtime schema discovery; and
 - high-level project, canvas, layer, and validated layer-tree models; and
 - bounded `CanvasPreview` PNG extraction; and

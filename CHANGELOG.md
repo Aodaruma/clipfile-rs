@@ -21,6 +21,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   action-mixer value records.
 - Raster-state helpers for distinguishing default-filled images from decoded
   external block data.
+- Common opaque block-status reporting through `BlockData::uniform_status`
+  when every block in an external object agrees.
 
 ### Documentation
 
