@@ -272,6 +272,145 @@ impl AnimationCurveKeyframeValues {
     }
 }
 
+/// Complete field values used when inserting one key into an existing curve.
+///
+/// Only arrays already present in the selected `FCurve` are written. Optional
+/// values must be supplied when their corresponding array exists, which keeps
+/// the edit conservative across curve kinds with different field layouts.
+#[cfg(feature = "write")]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnimationCurveKeyframeInsert {
+    time_60hz: f32,
+    value: f32,
+    tag: Option<String>,
+    interpolation: Option<String>,
+    left_slope: Option<f32>,
+    right_slope: Option<f32>,
+    revise_constant: Option<u8>,
+}
+
+#[cfg(feature = "write")]
+impl AnimationCurveKeyframeInsert {
+    /// Creates an insertion containing the required numeric fields.
+    #[must_use]
+    pub const fn new(time_60hz: f32, value: f32) -> Self {
+        Self {
+            time_60hz,
+            value,
+            tag: None,
+            interpolation: None,
+            left_slope: None,
+            right_slope: None,
+            revise_constant: None,
+        }
+    }
+
+    /// Sets the optional string tag field.
+    #[must_use]
+    pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
+        self.tag = Some(tag.into());
+        self
+    }
+
+    /// Sets the optional interpolation-name field.
+    #[must_use]
+    pub fn with_interpolation(mut self, interpolation: impl Into<String>) -> Self {
+        self.interpolation = Some(interpolation.into());
+        self
+    }
+
+    /// Sets optional incoming and outgoing slopes.
+    #[must_use]
+    pub const fn with_slopes(mut self, left: f32, right: f32) -> Self {
+        self.left_slope = Some(left);
+        self.right_slope = Some(right);
+        self
+    }
+
+    /// Sets the optional constant-interpolation revision byte.
+    #[must_use]
+    pub const fn with_revise_constant(mut self, revise_constant: u8) -> Self {
+        self.revise_constant = Some(revise_constant);
+        self
+    }
+
+    /// Key time in the mixer's observed 60 Hz timebase.
+    #[must_use]
+    pub const fn time_60hz(&self) -> f32 {
+        self.time_60hz
+    }
+
+    /// Numeric curve value.
+    #[must_use]
+    pub const fn value(&self) -> f32 {
+        self.value
+    }
+}
+
+/// One image-cel key used to normalize a template-cloned track.
+#[cfg(feature = "write")]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImageCelTrackKeyframe {
+    time_60hz: f32,
+    numeric_value: u32,
+    tag: String,
+}
+
+#[cfg(feature = "write")]
+impl ImageCelTrackKeyframe {
+    /// Creates one image-cel key.
+    #[must_use]
+    pub fn new(time_60hz: f32, numeric_value: u32, tag: impl Into<String>) -> Self {
+        Self {
+            time_60hz,
+            numeric_value,
+            tag: tag.into(),
+        }
+    }
+
+    /// Key time in the mixer's observed 60 Hz timebase.
+    #[must_use]
+    pub const fn time_60hz(&self) -> f32 {
+        self.time_60hz
+    }
+
+    /// Integer value paired with the cel tag.
+    #[must_use]
+    pub const fn numeric_value(&self) -> u32 {
+        self.numeric_value
+    }
+
+    /// Cel tag stored at this key.
+    #[must_use]
+    pub fn tag(&self) -> &str {
+        &self.tag
+    }
+}
+
+/// Options for producing an image-cel track from a complete existing template.
+#[cfg(feature = "write")]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImageCelTrackCloneOptions {
+    keyframes: Vec<ImageCelTrackKeyframe>,
+}
+
+#[cfg(feature = "write")]
+impl ImageCelTrackCloneOptions {
+    /// Creates options with the exact non-empty key sequence for the clone.
+    #[must_use]
+    pub fn new(keyframes: impl IntoIterator<Item = ImageCelTrackKeyframe>) -> Self {
+        Self {
+            keyframes: keyframes.into_iter().collect(),
+        }
+    }
+
+    /// Requested image-cel keys.
+    #[must_use]
+    pub fn keyframes(&self) -> &[ImageCelTrackKeyframe] {
+        &self.keyframes
+    }
+}
+
 /// One named `FCurve` decoded from a track's primary action mixer.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnimationCurve {
@@ -826,6 +965,61 @@ impl AnimationTrackCloneSummary {
     #[must_use]
     pub fn secondary_mixer_identifier(&self) -> Option<&[u8]> {
         self.secondary_mixer_identifier.as_deref()
+    }
+}
+
+/// Result of unlinking and deleting one animation-track row.
+///
+/// Mixer external objects are intentionally retained in the container and its
+/// index. This avoids deleting opaque data that may have non-Track references;
+/// a later rewrite may reclaim such verified orphans separately.
+#[cfg(feature = "write")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnimationTrackRemovalSummary {
+    track_id: i64,
+    timeline_id: i64,
+    previous_track_id: Option<i64>,
+    next_track_id: Option<i64>,
+    retained_primary_mixer_identifier: Option<Box<[u8]>>,
+    retained_secondary_mixer_identifier: Option<Box<[u8]>>,
+}
+
+#[cfg(feature = "write")]
+impl AnimationTrackRemovalSummary {
+    /// Removed `Track.MainId`.
+    #[must_use]
+    pub const fn track_id(&self) -> i64 {
+        self.track_id
+    }
+
+    /// Timeline whose chain was repaired.
+    #[must_use]
+    pub const fn timeline_id(&self) -> i64 {
+        self.timeline_id
+    }
+
+    /// Previous track in the repaired chain, or `None` for the first track.
+    #[must_use]
+    pub const fn previous_track_id(&self) -> Option<i64> {
+        self.previous_track_id
+    }
+
+    /// Track following the removed row, when present.
+    #[must_use]
+    pub const fn next_track_id(&self) -> Option<i64> {
+        self.next_track_id
+    }
+
+    /// Retained primary mixer identifier, when the row had one.
+    #[must_use]
+    pub fn retained_primary_mixer_identifier(&self) -> Option<&[u8]> {
+        self.retained_primary_mixer_identifier.as_deref()
+    }
+
+    /// Retained secondary mixer identifier, when the row had one.
+    #[must_use]
+    pub fn retained_secondary_mixer_identifier(&self) -> Option<&[u8]> {
+        self.retained_secondary_mixer_identifier.as_deref()
     }
 }
 
@@ -1548,8 +1742,13 @@ impl<R: Read + Seek> ClipWriter<'_, R> {
             source.secondary_declared_size,
             limits,
         )?;
-        let (bank_id, previous_tail_id) =
-            animation_clone_timeline_chain(self.database().connection(), timeline_id)?;
+        let (bank_id, previous_tail_id, track_count) =
+            animation_clone_timeline_chain(self.database().connection(), timeline_id, limits)?;
+        enforce_item_limit(
+            track_count.checked_add(1).ok_or(Error::OffsetOverflow)?,
+            limits.max_animation_items(),
+            "animation tracks after clone",
+        )?;
         let layer_uuid =
             animation_clone_layer_uuid(self.database().connection(), target_layer_id, limits)?;
         let track_id = next_animation_track_id(self.database().connection(), update_elem_scheme)?;
@@ -1601,6 +1800,7 @@ impl<R: Read + Seek> ClipWriter<'_, R> {
                 update_elem_scheme,
                 primary_identifier: primary_identifier.as_deref(),
                 secondary_identifier: secondary_identifier.as_deref(),
+                limits,
             },
         );
         if let Err(error) = insertion {
@@ -1617,6 +1817,135 @@ impl<R: Read + Seek> ClipWriter<'_, R> {
             primary_mixer_identifier: primary_identifier.map(Box::from),
             secondary_mixer_identifier: secondary_identifier.map(Box::from),
         })
+    }
+
+    /// Clones and normalizes one verified image-cel track.
+    ///
+    /// The complete Track row and both opaque BINC object graphs still come
+    /// from `template_track_id`; this method does not guess object metadata.
+    /// It verifies that the template is kind `2000`, clones it with the normal
+    /// UUID/chain/`ElemScheme` rules, then replaces its single
+    /// `ImageCelName` curve with the exact requested non-empty key sequence.
+    /// Any failure rolls back the cloned row and staged mixer bodies.
+    pub fn clone_image_cel_track_from_template(
+        &mut self,
+        template_track_id: i64,
+        timeline_id: i64,
+        target_layer_id: i64,
+        options: &ImageCelTrackCloneOptions,
+        limits: Limits,
+    ) -> Result<AnimationTrackCloneSummary> {
+        validate_image_cel_clone_request(
+            self.database().connection(),
+            self.database().schema(),
+            template_track_id,
+            target_layer_id,
+            options,
+            limits,
+        )?;
+        let summary = self.clone_animation_track_from_template(
+            template_track_id,
+            timeline_id,
+            target_layer_id,
+            limits,
+        )?;
+        let result = normalize_cloned_image_cel_track(self, summary.track_id(), options, limits);
+        if let Err(error) = result {
+            if let Err(rollback) = rollback_cloned_animation_track(self, &summary) {
+                return Err(Error::InvalidWrite {
+                    reason: format!(
+                        "image-cel clone normalization failed ({error}); rollback also failed ({rollback})"
+                    ),
+                });
+            }
+            return Err(error);
+        }
+        Ok(summary)
+    }
+
+    /// Inserts one complete key into an existing unique primary `FCurve`.
+    ///
+    /// All arrays already present in the curve are extended together. The
+    /// matching secondary curve is updated in double precision when present.
+    /// Unsupported or unrecognized per-key fields are rejected instead of
+    /// synthesized. For `ImageCelName`, the typed current value is
+    /// synchronized to the saved timeline position.
+    pub fn insert_animation_curve_keyframe(
+        &mut self,
+        track_id: i64,
+        curve_kind: &str,
+        axis: Option<&str>,
+        key_index: usize,
+        insertion: &AnimationCurveKeyframeInsert,
+        limits: Limits,
+    ) -> Result<AnimationCurveKeyframe> {
+        edit_animation_curve_keyframe(
+            self,
+            track_id,
+            curve_kind,
+            axis,
+            CurveKeyEdit::Insert {
+                index: key_index,
+                key: insertion,
+            },
+            limits,
+        )
+    }
+
+    /// Removes one key from an existing unique primary `FCurve`.
+    ///
+    /// The matching secondary curve and all of its per-key arrays are shortened
+    /// together. Removing the final key is rejected because the empty-curve
+    /// representation has not been proven for every track kind.
+    pub fn remove_animation_curve_keyframe(
+        &mut self,
+        track_id: i64,
+        curve_kind: &str,
+        axis: Option<&str>,
+        key_index: usize,
+        limits: Limits,
+    ) -> Result<AnimationCurveKeyframe> {
+        edit_animation_curve_keyframe(
+            self,
+            track_id,
+            curve_kind,
+            axis,
+            CurveKeyEdit::Remove { index: key_index },
+            limits,
+        )
+    }
+
+    /// Unlinks and deletes one existing Track row from a validated timeline.
+    ///
+    /// The timeline head or predecessor link is repaired transactionally.
+    /// `ElemScheme.MaxIndex` remains a high-water mark. Mixer external objects
+    /// and their index rows are retained conservatively.
+    pub fn remove_animation_track(
+        &mut self,
+        timeline_id: i64,
+        track_id: i64,
+        limits: Limits,
+    ) -> Result<AnimationTrackRemovalSummary> {
+        validate_animation_track_removal_schema(self.database().schema())?;
+        let source = writable_animation_track(
+            self.database().connection(),
+            self.database().schema(),
+            track_id,
+        )?;
+        validate_unique_animation_mixers(
+            self.database().connection(),
+            self.database().schema(),
+            track_id,
+            &source,
+        )?;
+        remove_animation_track_row(
+            self.database_mut().connection_mut(),
+            timeline_id,
+            track_id,
+            source.primary_identifier,
+            source.secondary_identifier,
+            limits,
+        )
     }
 
     /// Replaces the numeric time and value of one existing primary curve key.
@@ -1667,6 +1996,7 @@ impl<R: Read + Seek> ClipWriter<'_, R> {
             source.primary_declared_size,
             primary_mixer.len(),
         )?;
+        let primary_before = primary_mixer.clone();
         let original = patch_primary_curve_numeric(
             &mut primary_mixer,
             curve_kind,
@@ -1688,6 +2018,13 @@ impl<R: Read + Seek> ClipWriter<'_, R> {
                 source.secondary_size_column,
                 source.secondary_declared_size,
                 mixer.len(),
+            )?;
+            validate_matching_secondary_curve_keys(
+                &primary_before,
+                &mixer,
+                curve_kind,
+                axis,
+                limits,
             )?;
             patch_secondary_curve_numeric(
                 &mut mixer,
@@ -1758,6 +2095,7 @@ impl<R: Read + Seek> ClipWriter<'_, R> {
             source.primary_declared_size,
             primary_mixer.len(),
         )?;
+        let primary_before = primary_mixer.clone();
         let original = patch_primary_curve_tag(&mut primary_mixer, key_index, tag, limits)?;
         let primary_size = primary_mixer.len();
         let primary_replacement = encode_writable_mixer_for_writer(self, &primary_mixer, limits)?;
@@ -1773,6 +2111,19 @@ impl<R: Read + Seek> ClipWriter<'_, R> {
                 source.secondary_declared_size,
                 mixer.len(),
             )?;
+            if !validate_matching_secondary_curve_keys(
+                &primary_before,
+                &mixer,
+                "ImageCelName",
+                None,
+                limits,
+            )? {
+                return Err(Error::InvalidWrite {
+                    reason: format!(
+                        "animation track {track_id} has no matching secondary ImageCelName curve"
+                    ),
+                });
+            }
             if let Some(previous) = patch_secondary_curve_tag(&mut mixer, key_index, tag, limits)? {
                 if previous != original {
                     return Err(Error::InvalidWrite {
@@ -1829,6 +2180,501 @@ impl<R: Read + Seek> ClipWriter<'_, R> {
         }
         Ok(original)
     }
+}
+
+#[cfg(feature = "write")]
+fn validate_image_cel_clone_request(
+    connection: &rusqlite::Connection,
+    schema: &DatabaseSchema,
+    template_track_id: i64,
+    target_layer_id: i64,
+    options: &ImageCelTrackCloneOptions,
+    limits: Limits,
+) -> Result<()> {
+    for column in [
+        "MainId",
+        "LayerType",
+        "LayerFolder",
+        "AnimationFolder",
+        "LayerFirstChildIndex",
+        "LayerNextIndex",
+        "LayerName",
+    ] {
+        if !schema.has_column("Layer", column) {
+            return Err(Error::InvalidWrite {
+                reason: format!("Layer.{column} is required to validate an image-cel track target"),
+            });
+        }
+    }
+    let kind: Option<i64> = connection
+        .query_row(
+            "SELECT TrackKind FROM Track WHERE MainId = ?1",
+            params![template_track_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if kind != Some(2000) {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "animation template {template_track_id} is not a verified image-cel track"
+            ),
+        });
+    }
+    enforce_item_limit(
+        options.keyframes.len() as u64,
+        limits.max_animation_items(),
+        "image-cel track clone keys",
+    )?;
+    if options.keyframes.is_empty() {
+        return Err(Error::InvalidWrite {
+            reason: "image-cel track clone requires at least one key".to_owned(),
+        });
+    }
+    if options
+        .keyframes
+        .windows(2)
+        .any(|pair| pair[0].time_60hz > pair[1].time_60hz)
+    {
+        return Err(Error::InvalidWrite {
+            reason: "image-cel track clone keys must be sorted by 60 Hz time".to_owned(),
+        });
+    }
+    let mut by_tag = BTreeMap::<&str, u32>::new();
+    let mut by_value = BTreeMap::<u32, &str>::new();
+    let mut tag_bytes = 0_u64;
+    for key in &options.keyframes {
+        if !key.time_60hz.is_finite() {
+            return Err(Error::InvalidWrite {
+                reason: "image-cel track clone key time must be finite".to_owned(),
+            });
+        }
+        if !u32_is_exactly_representable_as_f32(key.numeric_value) {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "image-cel numeric value {} is not exactly representable as f32",
+                    key.numeric_value
+                ),
+            });
+        }
+        if key.tag.len() > u8::MAX as usize {
+            return Err(Error::InvalidWrite {
+                reason: "image-cel tags cannot exceed 255 UTF-8 bytes".to_owned(),
+            });
+        }
+        tag_bytes = tag_bytes
+            .checked_add(key.tag.len() as u64)
+            .ok_or(Error::OffsetOverflow)?;
+        enforce_byte_limit(
+            tag_bytes,
+            limits.max_animation_bytes(),
+            "image-cel track clone tags",
+        )?;
+        if by_tag
+            .insert(&key.tag, key.numeric_value)
+            .is_some_and(|previous| previous != key.numeric_value)
+            || by_value
+                .insert(key.numeric_value, &key.tag)
+                .is_some_and(|previous| previous != key.tag)
+        {
+            return Err(Error::InvalidWrite {
+                reason: "image-cel clone must map each tag to exactly one numeric value".to_owned(),
+            });
+        }
+    }
+
+    let (layer_type, folder, animation_folder, first_child): (i64, i64, i64, Option<i64>) =
+        connection
+            .query_row(
+                "SELECT LayerType, LayerFolder, AnimationFolder, LayerFirstChildIndex \
+             FROM Layer WHERE MainId = ?1",
+                params![target_layer_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        nonzero_track_id(row.get(3)?),
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or_else(|| Error::InvalidWrite {
+                reason: format!("target image-cel layer {target_layer_id} does not exist"),
+            })?;
+    if layer_type != 0 || folder == 0 || animation_folder != 1 {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "target image-cel layer {target_layer_id} must be an observed type-0 animation folder"
+            ),
+        });
+    }
+    let mut child = first_child.ok_or_else(|| Error::InvalidWrite {
+        reason: format!("target image-cel layer {target_layer_id} has no child cels"),
+    })?;
+    let mut child_names = BTreeMap::<String, ()>::new();
+    let mut visited = BTreeMap::<i64, ()>::new();
+    loop {
+        if visited.insert(child, ()).is_some() {
+            return Err(Error::InvalidWrite {
+                reason: "target image-cel layer has a cyclic child chain".to_owned(),
+            });
+        }
+        enforce_item_limit(
+            visited.len() as u64,
+            limits.max_animation_items(),
+            "target image-cel child layers",
+        )?;
+        let (name, next): (String, Option<i64>) = connection
+            .query_row(
+                "SELECT LayerName, LayerNextIndex FROM Layer WHERE MainId = ?1",
+                params![child],
+                |row| {
+                    let name = optional_text(row.get_ref(0)?, 0, "LayerName")?
+                        .ok_or_else(|| {
+                            rusqlite::Error::InvalidColumnType(
+                                0,
+                                "LayerName".to_owned(),
+                                rusqlite::types::Type::Null,
+                            )
+                        })?
+                        .to_owned();
+                    Ok((name, nonzero_track_id(row.get(1)?)))
+                },
+            )
+            .optional()?
+            .ok_or_else(|| Error::InvalidWrite {
+                reason: format!("target image-cel folder references missing child layer {child}"),
+            })?;
+        if child_names.insert(name.clone(), ()).is_some() {
+            return Err(Error::InvalidWrite {
+                reason: format!("target image-cel folder repeats child name {name:?}"),
+            });
+        }
+        let Some(next) = next else {
+            break;
+        };
+        child = next;
+    }
+    for key in &options.keyframes {
+        if !child_names.contains_key(&key.tag) {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "image-cel key tag {:?} does not name an immediate target child layer",
+                    key.tag
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "write")]
+fn u32_is_exactly_representable_as_f32(value: u32) -> bool {
+    f64::from(value as f32) == f64::from(value)
+}
+
+#[cfg(feature = "write")]
+fn normalize_cloned_image_cel_track<R: Read + Seek>(
+    writer: &mut ClipWriter<'_, R>,
+    track_id: i64,
+    options: &ImageCelTrackCloneOptions,
+    limits: Limits,
+) -> Result<()> {
+    let source = writable_animation_track(
+        writer.database().connection(),
+        writer.database().schema(),
+        track_id,
+    )?;
+    let identifier = source
+        .primary_identifier
+        .as_deref()
+        .ok_or_else(|| Error::InvalidWrite {
+            reason: "cloned image-cel track has no primary action mixer".to_owned(),
+        })?;
+    let body = writer.external_body_for_update(identifier, limits.max_animation_bytes())?;
+    let mixer = decode_writable_mixer(&body, limits)?;
+    let matching = parse_animation_curves(&mixer, limits)?
+        .into_iter()
+        .filter(|curve| curve.kind == "ImageCelName" && curve.axis.is_none())
+        .collect::<Vec<_>>();
+    let [curve] = matching.as_slice() else {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "image-cel template has {} ImageCelName curves, expected exactly one",
+                matching.len()
+            ),
+        });
+    };
+    for index in (1..curve.keyframes.len()).rev() {
+        writer.remove_animation_curve_keyframe(track_id, "ImageCelName", None, index, limits)?;
+    }
+    let first = &options.keyframes[0];
+    writer.replace_animation_curve_keyframe_numeric(
+        track_id,
+        "ImageCelName",
+        None,
+        0,
+        AnimationCurveKeyframeValues::new(first.time_60hz, first.numeric_value as f32),
+        limits,
+    )?;
+    writer.replace_animation_cel_tag(track_id, 0, &first.tag, limits)?;
+    for (index, key) in options.keyframes.iter().enumerate().skip(1) {
+        let insertion = AnimationCurveKeyframeInsert::new(key.time_60hz, key.numeric_value as f32)
+            .with_tag(&key.tag)
+            .with_interpolation("Constant")
+            .with_slopes(0.0, 0.0)
+            .with_revise_constant(1);
+        writer.insert_animation_curve_keyframe(
+            track_id,
+            "ImageCelName",
+            None,
+            index,
+            &insertion,
+            limits,
+        )?;
+    }
+    synchronize_image_cel_value_map(writer, track_id, limits)
+}
+
+#[cfg(feature = "write")]
+fn synchronize_image_cel_value_map<R: Read + Seek>(
+    writer: &mut ClipWriter<'_, R>,
+    track_id: i64,
+    limits: Limits,
+) -> Result<()> {
+    let source = writable_animation_track(
+        writer.database().connection(),
+        writer.database().schema(),
+        track_id,
+    )?;
+    let identifier = source
+        .primary_identifier
+        .as_deref()
+        .ok_or_else(|| Error::InvalidWrite {
+            reason: "image-cel track has no primary action mixer".to_owned(),
+        })?;
+    let body = writer.external_body_for_update(identifier, limits.max_animation_bytes())?;
+    let mixer = decode_writable_mixer(&body, limits)?;
+    let matching = parse_animation_curves(&mixer, limits)?
+        .into_iter()
+        .filter(|curve| curve.kind == "ImageCelName" && curve.axis.is_none())
+        .collect::<Vec<_>>();
+    let [curve] = matching.as_slice() else {
+        return Err(Error::InvalidWrite {
+            reason: "image-cel track must contain one ImageCelName curve".to_owned(),
+        });
+    };
+    let value_map = source
+        .value_map
+        .as_deref()
+        .ok_or_else(|| Error::InvalidWrite {
+            reason: "image-cel track has no TrackValueMap".to_owned(),
+        })?;
+    let bank_id = source.bank_id.ok_or_else(|| Error::InvalidWrite {
+        reason: "image-cel Track.BankId is required for current-value synchronization".to_owned(),
+    })?;
+    let tick = saved_timeline_tick(writer.database().connection(), bank_id)?;
+    let encoded = synchronize_cel_track_value_at_tick(value_map, &curve.keyframes, tick, limits)?;
+    update_animation_track_metadata(
+        writer.database().connection(),
+        track_id,
+        None,
+        None,
+        Some(&encoded),
+    )
+}
+
+#[cfg(feature = "write")]
+fn rollback_cloned_animation_track<R: Read + Seek>(
+    writer: &mut ClipWriter<'_, R>,
+    summary: &AnimationTrackCloneSummary,
+) -> Result<()> {
+    let track_id = summary.track_id;
+    let timeline_id = summary.timeline_id;
+    let connection = writer.database_mut().connection_mut();
+    (|| -> Result<()> {
+        let transaction = connection.transaction()?;
+        let predecessor: Option<i64> = transaction
+            .query_row(
+                "SELECT MainId FROM Track WHERE TrackNextIndex = ?1",
+                params![track_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let changed = if let Some(predecessor) = predecessor {
+            transaction.execute(
+                "UPDATE Track SET TrackNextIndex = 0 WHERE MainId = ?1 AND TrackNextIndex = ?2",
+                params![predecessor, track_id],
+            )?
+        } else {
+            transaction.execute(
+                "UPDATE TimeLine SET FirstTrack = 0 WHERE MainId = ?1 AND FirstTrack = ?2",
+                params![timeline_id, track_id],
+            )?
+        };
+        if changed != 1 {
+            return Err(Error::InvalidWrite {
+                reason: "failed to unlink a rolled-back image-cel track clone".to_owned(),
+            });
+        }
+        let deleted =
+            transaction.execute("DELETE FROM Track WHERE MainId = ?1", params![track_id])?;
+        if deleted != 1 {
+            return Err(Error::InvalidWrite {
+                reason: "failed to delete a rolled-back image-cel track clone".to_owned(),
+            });
+        }
+        if transaction.query_row(
+            "SELECT count(*) FROM sqlite_master \
+                 WHERE type = 'table' AND name = 'ElemScheme'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )? == 1
+        {
+            let restored = transaction.execute(
+                "UPDATE ElemScheme SET MaxIndex = ?1 \
+                 WHERE TableName = 'Track' AND MaxIndex = ?2",
+                params![track_id - 1, track_id],
+            )?;
+            if restored != 1 {
+                return Err(Error::InvalidWrite {
+                    reason: "failed to restore ElemScheme after image-cel clone rollback"
+                        .to_owned(),
+                });
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    })()?;
+    for identifier in [
+        summary.secondary_mixer_identifier(),
+        summary.primary_mixer_identifier(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let removed = writer.unstage_new_external_body(identifier);
+        if removed.is_none() {
+            return Err(Error::InvalidWrite {
+                reason: "rolled-back image-cel clone mixer was not staged".to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "write")]
+fn validate_animation_track_removal_schema(schema: &DatabaseSchema) -> Result<()> {
+    for (table, column) in [
+        ("Track", "MainId"),
+        ("Track", "BankId"),
+        ("Track", "TrackNextIndex"),
+        ("Track", "TrackActionMixer"),
+        ("TimeLine", "MainId"),
+        ("TimeLine", "BankId"),
+        ("TimeLine", "FirstTrack"),
+    ] {
+        if !schema.has_column(table, column) {
+            return Err(Error::InvalidWrite {
+                reason: format!("{table}.{column} is required to remove an animation track"),
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "write")]
+fn remove_animation_track_row(
+    connection: &mut rusqlite::Connection,
+    timeline_id: i64,
+    track_id: i64,
+    primary_identifier: Option<Vec<u8>>,
+    secondary_identifier: Option<Vec<u8>>,
+    limits: Limits,
+) -> Result<AnimationTrackRemovalSummary> {
+    let (timeline_bank, first_track): (i64, Option<i64>) = connection
+        .query_row(
+            "SELECT BankId, FirstTrack FROM TimeLine WHERE MainId = ?1",
+            params![timeline_id],
+            |row| Ok((row.get(0)?, nonzero_track_id(row.get(1)?))),
+        )
+        .optional()?
+        .ok_or_else(|| Error::InvalidWrite {
+            reason: format!("target timeline {timeline_id} does not exist"),
+        })?;
+    let (track_bank, next_track): (i64, Option<i64>) = connection
+        .query_row(
+            "SELECT BankId, TrackNextIndex FROM Track WHERE MainId = ?1",
+            params![track_id],
+            |row| Ok((row.get(0)?, nonzero_track_id(row.get(1)?))),
+        )
+        .optional()?
+        .ok_or_else(|| Error::InvalidWrite {
+            reason: format!("animation track {track_id} does not exist"),
+        })?;
+    if track_bank != timeline_bank {
+        return Err(Error::InvalidWrite {
+            reason: format!("animation track {track_id} does not belong to timeline {timeline_id}"),
+        });
+    }
+    animation_clone_timeline_chain(connection, timeline_id, limits)?;
+    let previous_track_id = if first_track == Some(track_id) {
+        None
+    } else {
+        let mut statement = connection
+            .prepare("SELECT MainId FROM Track WHERE BankId = ?1 AND TrackNextIndex = ?2")?;
+        let predecessors = statement
+            .query_map(params![timeline_bank, track_id], |row| row.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let [previous] = predecessors.as_slice() else {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "animation track {track_id} has {} chain predecessors",
+                    predecessors.len()
+                ),
+            });
+        };
+        Some(*previous)
+    };
+    let transaction = connection.transaction()?;
+    let replacement = next_track.unwrap_or(0);
+    let relinked = if let Some(previous) = previous_track_id {
+        transaction.execute(
+            "UPDATE Track SET TrackNextIndex = ?1 \
+             WHERE MainId = ?2 AND BankId = ?3 AND TrackNextIndex = ?4",
+            params![replacement, previous, timeline_bank, track_id],
+        )?
+    } else {
+        transaction.execute(
+            "UPDATE TimeLine SET FirstTrack = ?1 \
+             WHERE MainId = ?2 AND FirstTrack = ?3",
+            params![replacement, timeline_id, track_id],
+        )?
+    };
+    if relinked != 1 {
+        return Err(Error::InvalidWrite {
+            reason: format!("animation track {track_id} chain repair affected {relinked} rows"),
+        });
+    }
+    let deleted = transaction.execute(
+        "DELETE FROM Track WHERE MainId = ?1 AND BankId = ?2",
+        params![track_id, timeline_bank],
+    )?;
+    if deleted != 1 {
+        return Err(Error::InvalidWrite {
+            reason: format!("animation track {track_id} deletion affected {deleted} rows"),
+        });
+    }
+    animation_clone_timeline_chain(&transaction, timeline_id, limits)?;
+    transaction.commit()?;
+    Ok(AnimationTrackRemovalSummary {
+        track_id,
+        timeline_id,
+        previous_track_id,
+        next_track_id: next_track,
+        retained_primary_mixer_identifier: primary_identifier.map(Box::from),
+        retained_secondary_mixer_identifier: secondary_identifier.map(Box::from),
+    })
 }
 
 #[cfg(feature = "write")]
@@ -1900,7 +2746,8 @@ fn clone_animation_mixer_body<R: Read + Seek>(
 fn animation_clone_timeline_chain(
     connection: &rusqlite::Connection,
     timeline_id: i64,
-) -> Result<(i64, Option<i64>)> {
+    limits: Limits,
+) -> Result<(i64, Option<i64>, u64)> {
     let row_count: i64 = connection.query_row(
         "SELECT count(*) FROM TimeLine WHERE MainId = ?1",
         params![timeline_id],
@@ -1924,6 +2771,11 @@ fn animation_clone_timeline_chain(
     let mut rows = statement.query(params![bank_id])?;
     let mut by_id = BTreeMap::<i64, Option<i64>>::new();
     while let Some(row) = rows.next()? {
+        enforce_item_limit(
+            by_id.len() as u64 + 1,
+            limits.max_animation_items(),
+            "animation timeline tracks",
+        )?;
         let id: i64 = row.get(0)?;
         let next = nonzero_track_id(row.get(1)?);
         if by_id.insert(id, next).is_some() {
@@ -1940,7 +2792,7 @@ fn animation_clone_timeline_chain(
                 reason: format!("target timeline {timeline_id} has tracks but no FirstTrack"),
             });
         }
-        return Ok((bank_id, None));
+        return Ok((bank_id, None, 0));
     };
     let mut visited = BTreeMap::<i64, ()>::new();
     loop {
@@ -1949,6 +2801,11 @@ fn animation_clone_timeline_chain(
                 reason: format!("target timeline {timeline_id} track chain is cyclic at {current}"),
             });
         }
+        enforce_item_limit(
+            visited.len() as u64,
+            limits.max_animation_items(),
+            "animation timeline track chain",
+        )?;
         let next = by_id.get(&current).ok_or_else(|| Error::InvalidWrite {
             reason: format!("target timeline {timeline_id} references missing track {current}"),
         })?;
@@ -1962,7 +2819,7 @@ fn animation_clone_timeline_chain(
             reason: format!("target timeline {timeline_id} track chain contains unreachable rows"),
         });
     }
-    Ok((bank_id, Some(current)))
+    Ok((bank_id, Some(current), visited.len() as u64))
 }
 
 #[cfg(feature = "write")]
@@ -2227,6 +3084,7 @@ struct AnimationTrackCloneInsert<'a> {
     update_elem_scheme: bool,
     primary_identifier: Option<&'a [u8]>,
     secondary_identifier: Option<&'a [u8]>,
+    limits: Limits,
 }
 
 #[cfg(feature = "write")]
@@ -2312,7 +3170,8 @@ fn insert_animation_track_clone(
             ),
         });
     }
-    let (_, tail) = animation_clone_timeline_chain(&transaction, insertion.timeline_id)?;
+    let (_, tail, _) =
+        animation_clone_timeline_chain(&transaction, insertion.timeline_id, insertion.limits)?;
     if tail != Some(insertion.track_id) {
         return Err(Error::InvalidWrite {
             reason: format!(
@@ -2342,6 +3201,8 @@ fn rollback_animation_additions<R: Read + Seek>(
 
 #[cfg(feature = "write")]
 struct WritableAnimationTrack {
+    bank_id: Option<i64>,
+    kind: Option<i64>,
     primary_identifier: Option<Vec<u8>>,
     secondary_identifier: Option<Vec<u8>>,
     value_map: Option<Vec<u8>>,
@@ -2426,7 +3287,10 @@ fn writable_animation_track(
         }
     };
     let sql = format!(
-        "SELECT TrackActionMixer, {}, {}, {}, {} FROM Track WHERE MainId = ?1 LIMIT 1",
+        "SELECT {}, {}, TrackActionMixer, {}, {}, {}, {} \
+         FROM Track WHERE MainId = ?1 LIMIT 1",
+        optional("BankId"),
+        optional("TrackKind"),
         optional("TrackActionMixer2"),
         optional("TrackValueMap"),
         optional("TrackActionMixerSize"),
@@ -2435,15 +3299,17 @@ fn writable_animation_track(
     connection
         .query_row(&sql, params![track_id], |row| {
             Ok(WritableAnimationTrack {
-                primary_identifier: optional_bytes(row.get_ref(0)?, 0, "TrackActionMixer")?
+                bank_id: row.get(0)?,
+                kind: row.get(1)?,
+                primary_identifier: optional_bytes(row.get_ref(2)?, 2, "TrackActionMixer")?
                     .map(<[u8]>::to_vec),
-                secondary_identifier: optional_bytes(row.get_ref(1)?, 1, "TrackActionMixer2")?
+                secondary_identifier: optional_bytes(row.get_ref(3)?, 3, "TrackActionMixer2")?
                     .map(<[u8]>::to_vec),
-                value_map: optional_bytes(row.get_ref(2)?, 2, "TrackValueMap")?.map(<[u8]>::to_vec),
+                value_map: optional_bytes(row.get_ref(4)?, 4, "TrackValueMap")?.map(<[u8]>::to_vec),
                 primary_size_column: schema.has_column("Track", "TrackActionMixerSize"),
                 secondary_size_column: schema.has_column("Track", "TrackActionMixer2Size"),
-                primary_declared_size: row.get(3)?,
-                secondary_declared_size: row.get(4)?,
+                primary_declared_size: row.get(5)?,
+                secondary_declared_size: row.get(6)?,
             })
         })
         .optional()?
@@ -2555,6 +3421,314 @@ fn update_animation_track_metadata(
 }
 
 #[cfg(feature = "write")]
+fn validate_matching_secondary_curve_keys(
+    primary_mixer: &[u8],
+    secondary_mixer: &[u8],
+    curve_kind: &str,
+    axis: Option<&str>,
+    limits: Limits,
+) -> Result<bool> {
+    let primary = parse_animation_curves(primary_mixer, limits)?
+        .into_iter()
+        .filter(|curve| curve.kind == curve_kind && curve.axis.as_deref() == axis)
+        .collect::<Vec<_>>();
+    let [primary] = primary.as_slice() else {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "primary animation mixer has {} {curve_kind:?} curves for axis {axis:?}, expected one",
+                primary.len()
+            ),
+        });
+    };
+    let secondary = parse_secondary_animation_curves(secondary_mixer, limits)?
+        .into_iter()
+        .filter(|curve| curve.kind == curve_kind && curve.axis.as_deref() == axis)
+        .collect::<Vec<_>>();
+    if secondary.is_empty() {
+        return Ok(false);
+    }
+    if secondary.len() != 1 {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "secondary animation mixer has {} {curve_kind:?} curves for axis {axis:?}, expected at most one",
+                secondary.len()
+            ),
+        });
+    }
+    let secondary = &secondary[0];
+    if primary.keyframes.len() != secondary.keyframes.len() {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "primary and secondary {curve_kind:?} curves have {} and {} keys",
+                primary.keyframes.len(),
+                secondary.keyframes.len()
+            ),
+        });
+    }
+    for (index, (primary, secondary)) in primary
+        .keyframes
+        .iter()
+        .zip(&secondary.keyframes)
+        .enumerate()
+    {
+        if f64::from(primary.time_60hz) != secondary.time_60hz {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "primary and secondary {curve_kind:?} key {index} times are inconsistent"
+                ),
+            });
+        }
+        if primary.tag != secondary.tag {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "primary and secondary {curve_kind:?} key {index} tags are inconsistent"
+                ),
+            });
+        }
+    }
+    Ok(true)
+}
+
+#[cfg(feature = "write")]
+fn edit_animation_curve_keyframe<R: Read + Seek>(
+    writer: &mut ClipWriter<'_, R>,
+    track_id: i64,
+    curve_kind: &str,
+    axis: Option<&str>,
+    edit: CurveKeyEdit<'_>,
+    limits: Limits,
+) -> Result<AnimationCurveKeyframe> {
+    let source = writable_animation_track(
+        writer.database().connection(),
+        writer.database().schema(),
+        track_id,
+    )?;
+    validate_unique_animation_mixers(
+        writer.database().connection(),
+        writer.database().schema(),
+        track_id,
+        &source,
+    )?;
+    let primary_id = source
+        .primary_identifier
+        .clone()
+        .ok_or_else(|| Error::InvalidWrite {
+            reason: format!("animation track {track_id} has no primary action mixer"),
+        })?;
+    let primary_body =
+        writer.external_body_for_update(&primary_id, limits.max_animation_bytes())?;
+    let mut primary_mixer = decode_writable_mixer(&primary_body, limits)?;
+    validate_declared_mixer_size(
+        track_id,
+        "primary",
+        source.primary_size_column,
+        source.primary_declared_size,
+        primary_mixer.len(),
+    )?;
+    let primary_before = primary_mixer.clone();
+    let (affected, updated_primary_keys) =
+        edit_primary_curve_key(&mut primary_mixer, curve_kind, axis, &edit, limits)?;
+    let primary_size = primary_mixer.len();
+    let primary_replacement = encode_writable_mixer_for_writer(writer, &primary_mixer, limits)?;
+
+    let secondary_replacement = if let Some(identifier) = source.secondary_identifier.as_deref() {
+        let body = writer.external_body_for_update(identifier, limits.max_animation_bytes())?;
+        let mut mixer = decode_writable_mixer(&body, limits)?;
+        validate_declared_mixer_size(
+            track_id,
+            "secondary",
+            source.secondary_size_column,
+            source.secondary_declared_size,
+            mixer.len(),
+        )?;
+        let matching_secondary = validate_matching_secondary_curve_keys(
+            &primary_before,
+            &mixer,
+            curve_kind,
+            axis,
+            limits,
+        )?;
+        if source.kind == Some(2000) && curve_kind == "ImageCelName" && !matching_secondary {
+            return Err(Error::InvalidWrite {
+                reason: "image-cel track has no matching secondary ImageCelName curve".to_owned(),
+            });
+        }
+        let changed = edit_secondary_curve_key(&mut mixer, curve_kind, axis, &edit, limits)?;
+        if source.kind == Some(2000) && curve_kind == "ImageCelName" && !changed {
+            return Err(Error::InvalidWrite {
+                reason: "image-cel track has no matching secondary ImageCelName curve".to_owned(),
+            });
+        }
+        changed
+            .then(|| {
+                let size = mixer.len();
+                encode_writable_mixer_for_writer(writer, &mixer, limits)
+                    .map(|body| (identifier.to_vec(), body, size))
+            })
+            .transpose()?
+    } else {
+        if source.kind == Some(2000) && curve_kind == "ImageCelName" {
+            return Err(Error::InvalidWrite {
+                reason: "image-cel track has no secondary action mixer".to_owned(),
+            });
+        }
+        None
+    };
+
+    let updated_value_map = if source.kind == Some(2000) && curve_kind == "ImageCelName" {
+        if axis.is_some() {
+            return Err(Error::InvalidWrite {
+                reason: "ImageCelName curve cannot have an axis".to_owned(),
+            });
+        }
+        let map = source
+            .value_map
+            .as_deref()
+            .ok_or_else(|| Error::InvalidWrite {
+                reason: "image-cel track has no TrackValueMap".to_owned(),
+            })?;
+        let bank_id = source.bank_id.ok_or_else(|| Error::InvalidWrite {
+            reason: "image-cel Track.BankId is required for current-value synchronization"
+                .to_owned(),
+        })?;
+        let tick = saved_timeline_tick(writer.database().connection(), bank_id)?;
+        Some(synchronize_cel_track_value_at_tick(
+            map,
+            &updated_primary_keys,
+            tick,
+            limits,
+        )?)
+    } else {
+        None
+    };
+
+    let mut replacements = vec![(primary_id, primary_replacement)];
+    if let Some((identifier, replacement, _)) = &secondary_replacement {
+        replacements.push((identifier.clone(), replacement.clone()));
+    }
+    let installed = install_animation_replacements(writer, replacements)?;
+    let secondary_size = secondary_replacement
+        .as_ref()
+        .map(|(_, _, size)| *size)
+        .or_else(|| {
+            source
+                .secondary_declared_size
+                .and_then(|size| usize::try_from(size).ok())
+        });
+    if let Err(error) = update_animation_track_metadata(
+        writer.database().connection(),
+        track_id,
+        source.primary_size_column.then_some(primary_size),
+        source
+            .secondary_size_column
+            .then_some(secondary_size)
+            .flatten(),
+        updated_value_map.as_deref(),
+    ) {
+        rollback_animation_replacements(writer, installed);
+        return Err(error);
+    }
+    Ok(affected)
+}
+
+#[cfg(feature = "write")]
+fn saved_timeline_tick(connection: &rusqlite::Connection, bank_id: i64) -> Result<f64> {
+    let rows: i64 = connection.query_row(
+        "SELECT count(*) FROM TimeLine WHERE BankId = ?1",
+        params![bank_id],
+        |row| row.get(0),
+    )?;
+    if rows != 1 {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "animation bank {bank_id} has {rows} timelines; one is required for current-value synchronization"
+            ),
+        });
+    }
+    let (frame_rate, current_frame): (f64, Option<f64>) = connection.query_row(
+        "SELECT FrameRate, CurrentFrame FROM TimeLine WHERE BankId = ?1 LIMIT 1",
+        params![bank_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let current_frame = current_frame.ok_or_else(|| Error::InvalidWrite {
+        reason: "animation timeline has no saved current frame".to_owned(),
+    })?;
+    if !frame_rate.is_finite() || frame_rate <= 0.0 || !current_frame.is_finite() {
+        return Err(Error::InvalidWrite {
+            reason: "animation timeline has invalid playback metadata".to_owned(),
+        });
+    }
+    Ok(current_frame * 60.0 / frame_rate)
+}
+
+#[cfg(feature = "write")]
+fn synchronize_cel_track_value_at_tick(
+    bytes: &[u8],
+    keys: &[AnimationCurveKeyframe],
+    tick: f64,
+    limits: Limits,
+) -> Result<Vec<u8>> {
+    let key = keys
+        .iter()
+        .rev()
+        .find(|key| f64::from(key.time_60hz) <= tick + 1e-5)
+        .ok_or_else(|| Error::InvalidWrite {
+            reason: "edited ImageCelName curve has no key active at the saved frame".to_owned(),
+        })?;
+    let tag = key.tag.as_ref().ok_or_else(|| Error::InvalidWrite {
+        reason: "edited ImageCelName key has no Tag value".to_owned(),
+    })?;
+    let numeric = exact_cel_numeric_value(key.value)?;
+    let mut entries = parse_track_value_map(bytes, limits)?;
+    let matching = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.name == "ImageCelName")
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let [index] = matching.as_slice() else {
+        return Err(Error::InvalidWrite {
+            reason: "image-cel TrackValueMap must contain exactly one ImageCelName entry"
+                .to_owned(),
+        });
+    };
+    let AnimationTrackValue::IndexedText {
+        text,
+        numeric_value,
+    } = &mut entries[*index].value
+    else {
+        return Err(Error::InvalidWrite {
+            reason: "image-cel TrackValueMap entry has an unexpected value kind".to_owned(),
+        });
+    };
+    *text = tag.clone();
+    *numeric_value = numeric;
+    let encoded = encode_track_value_map(&entries, limits)?;
+    if parse_track_value_map(&encoded, limits)? != entries {
+        return Err(Error::InvalidWrite {
+            reason: "synchronized image-cel TrackValueMap did not round-trip".to_owned(),
+        });
+    }
+    Ok(encoded)
+}
+
+#[cfg(feature = "write")]
+fn exact_cel_numeric_value(value: f32) -> Result<u32> {
+    if !value.is_finite() || value < 0.0 || value.fract() != 0.0 || value > u32::MAX as f32 {
+        return Err(Error::InvalidWrite {
+            reason: "ImageCelName numeric values must be exact non-negative integers".to_owned(),
+        });
+    }
+    let numeric = value as u32;
+    if numeric as f32 != value {
+        return Err(Error::InvalidWrite {
+            reason: "ImageCelName numeric value is not exactly representable".to_owned(),
+        });
+    }
+    Ok(numeric)
+}
+
+#[cfg(feature = "write")]
 fn decode_writable_mixer(body: &[u8], limits: Limits) -> Result<Vec<u8>> {
     let length = body.get(..4).ok_or_else(|| Error::InvalidWrite {
         reason: "animation mixer body lacks its little-endian length prefix".to_owned(),
@@ -2614,6 +3788,459 @@ struct PrimaryKeyOffsets {
     frame: usize,
     value: usize,
     tag: Option<usize>,
+}
+
+#[cfg(feature = "write")]
+enum CurveKeyEdit<'a> {
+    Insert {
+        index: usize,
+        key: &'a AnimationCurveKeyframeInsert,
+    },
+    Remove {
+        index: usize,
+    },
+}
+
+#[cfg(feature = "write")]
+impl CurveKeyEdit<'_> {
+    const fn index(&self) -> usize {
+        match self {
+            Self::Insert { index, .. } | Self::Remove { index } => *index,
+        }
+    }
+}
+
+#[cfg(feature = "write")]
+struct CurveFieldLayout {
+    name: String,
+    field_type: String,
+    start: usize,
+    count_offset: usize,
+    data_start: usize,
+    data_end: usize,
+    end: usize,
+    element_size: usize,
+}
+
+#[cfg(feature = "write")]
+struct CurveRecordLayout {
+    start: usize,
+    end: usize,
+    fields_start: usize,
+    key_count: usize,
+    fields: Vec<CurveFieldLayout>,
+}
+
+#[cfg(feature = "write")]
+fn animation_curve_record_layout(
+    bytes: &[u8],
+    strings: &[String],
+    start: usize,
+    header: &AnimationCurveHeader,
+    key_count: usize,
+    secondary: bool,
+) -> Result<CurveRecordLayout> {
+    let fields_start = header.cursor;
+    let mut cursor = fields_start;
+    let field_count = read_u32(bytes, &mut cursor)?;
+    let mut fields = Vec::new();
+    for _ in 0..field_count {
+        let start = cursor;
+        if secondary {
+            let int32_array =
+                string_id_optional(strings, "Int32[]").ok_or_else(|| Error::InvalidWrite {
+                    reason: "secondary animation mixer lacks Int32[] metadata".to_owned(),
+                })?;
+            if !secondary_field_header_matches(bytes, cursor, strings.len(), int32_array) {
+                return Err(Error::InvalidWrite {
+                    reason: "secondary animation curve field metadata is invalid".to_owned(),
+                });
+            }
+            skip_array(bytes, &mut cursor, 3, 4)?;
+        }
+        let name = string_at(strings, read_u32(bytes, &mut cursor)?)?.to_owned();
+        let field_type = string_at(strings, read_u32(bytes, &mut cursor)?)?.to_owned();
+        let count_offset = cursor;
+        let count =
+            usize::try_from(read_u32(bytes, &mut cursor)?).map_err(|_| Error::OffsetOverflow)?;
+        if count != key_count {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "animation curve field {name:?} contains {count} values for {key_count} keys"
+                ),
+            });
+        }
+        let element_size =
+            animation_curve_element_size(&field_type, secondary).ok_or_else(|| {
+                Error::InvalidWrite {
+                    reason: format!(
+                        "animation curve field {name:?} uses unsupported type {field_type:?}"
+                    ),
+                }
+            })?;
+        let data_start = cursor;
+        skip_array(bytes, &mut cursor, count, element_size)?;
+        let data_end = cursor;
+        if [read_u32(bytes, &mut cursor)?, read_u32(bytes, &mut cursor)?] != [0, 0] {
+            return Err(Error::InvalidWrite {
+                reason: format!("animation curve field {name:?} has a nonzero terminator"),
+            });
+        }
+        fields.push(CurveFieldLayout {
+            name,
+            field_type,
+            start,
+            count_offset,
+            data_start,
+            data_end,
+            end: cursor,
+            element_size,
+        });
+    }
+    Ok(CurveRecordLayout {
+        start,
+        end: cursor,
+        fields_start,
+        key_count,
+        fields,
+    })
+}
+
+#[cfg(feature = "write")]
+fn animation_curve_element_size(field_type: &str, secondary: bool) -> Option<usize> {
+    match field_type {
+        "Byte[]" => Some(1),
+        "Single[]" | "String[]" | "Int32[]" => Some(4),
+        "UInt32[]" if secondary => Some(4),
+        "Float2[]" | "Double[]" => Some(8),
+        "Float3[]" => Some(12),
+        "Quat[]" | "Double2[]" if secondary => Some(16),
+        "Double3[]" if secondary => Some(24),
+        "Matrix44[]" => Some(if secondary { 128 } else { 64 }),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "write")]
+fn inserted_curve_field_bytes(
+    field: &CurveFieldLayout,
+    key: &AnimationCurveKeyframeInsert,
+    strings: &[String],
+    secondary: bool,
+) -> Result<Vec<u8>> {
+    let finite = |value: Option<f32>, label: &str| -> Result<f32> {
+        value
+            .filter(|value| value.is_finite())
+            .ok_or_else(|| Error::InvalidWrite {
+                reason: format!("animation curve insertion requires finite {label}"),
+            })
+    };
+    let string_id = |value: Option<&str>, label: &str| -> Result<Vec<u8>> {
+        let value = value.ok_or_else(|| Error::InvalidWrite {
+            reason: format!("animation curve insertion requires {label}"),
+        })?;
+        let id = string_id_optional(strings, value).ok_or_else(|| Error::InvalidWrite {
+            reason: format!("animation mixer string table does not contain {value:?}"),
+        })?;
+        Ok(id.to_le_bytes().to_vec())
+    };
+    match (field.name.as_str(), field.field_type.as_str(), secondary) {
+        ("Frame", "Single[]", _) => Ok(key.time_60hz.to_le_bytes().to_vec()),
+        ("Frame", "Double[]", true) => Ok(f64::from(key.time_60hz).to_le_bytes().to_vec()),
+        ("Value", "Single[]", _) => Ok(key.value.to_le_bytes().to_vec()),
+        ("Value", "Double[]", true) => Ok(f64::from(key.value).to_le_bytes().to_vec()),
+        ("Tag", "String[]", _) => string_id(key.tag.as_deref(), "a Tag value"),
+        ("Interp", "String[]", _) => string_id(key.interpolation.as_deref(), "an Interp value"),
+        ("LeftSlope", "Single[]", _) => {
+            Ok(finite(key.left_slope, "LeftSlope")?.to_le_bytes().to_vec())
+        }
+        ("RightSlope", "Single[]", _) => Ok(finite(key.right_slope, "RightSlope")?
+            .to_le_bytes()
+            .to_vec()),
+        ("LeftSlope", "Double[]", true) => Ok(f64::from(finite(key.left_slope, "LeftSlope")?)
+            .to_le_bytes()
+            .to_vec()),
+        ("RightSlope", "Double[]", true) => Ok(f64::from(finite(key.right_slope, "RightSlope")?)
+            .to_le_bytes()
+            .to_vec()),
+        ("ReviseConstant", "Byte[]", _) => Ok(vec![key.revise_constant.ok_or_else(|| {
+            Error::InvalidWrite {
+                reason: "animation curve insertion requires a ReviseConstant value".to_owned(),
+            }
+        })?]),
+        _ => Err(Error::InvalidWrite {
+            reason: format!(
+                "cannot synthesize animation curve field {:?} with type {:?}",
+                field.name, field.field_type
+            ),
+        }),
+    }
+}
+
+#[cfg(feature = "write")]
+fn rebuild_curve_record(
+    bytes: &mut Vec<u8>,
+    layout: &CurveRecordLayout,
+    edit: &CurveKeyEdit<'_>,
+    strings: &[String],
+    secondary: bool,
+) -> Result<()> {
+    let index = edit.index();
+    let new_count = match edit {
+        CurveKeyEdit::Insert { .. } => {
+            if index > layout.key_count {
+                return Err(Error::InvalidWrite {
+                    reason: format!(
+                        "animation curve has {} keys, so insertion index {index} is invalid",
+                        layout.key_count
+                    ),
+                });
+            }
+            layout
+                .key_count
+                .checked_add(1)
+                .ok_or(Error::OffsetOverflow)?
+        }
+        CurveKeyEdit::Remove { .. } => {
+            if index >= layout.key_count {
+                return Err(Error::InvalidWrite {
+                    reason: format!(
+                        "animation curve has {} keys, so removal index {index} is invalid",
+                        layout.key_count
+                    ),
+                });
+            }
+            if layout.key_count == 1 {
+                return Err(Error::InvalidWrite {
+                    reason: "removing the final animation curve key is not supported".to_owned(),
+                });
+            }
+            layout.key_count - 1
+        }
+    };
+    let encoded_count = u32::try_from(new_count).map_err(|_| Error::OffsetOverflow)?;
+    let mut record = Vec::new();
+    record.extend_from_slice(&bytes[layout.start..layout.fields_start + 4]);
+    for field in &layout.fields {
+        record.extend_from_slice(&bytes[field.start..field.count_offset]);
+        record.extend_from_slice(&encoded_count.to_le_bytes());
+        let split = field
+            .data_start
+            .checked_add(
+                index
+                    .checked_mul(field.element_size)
+                    .ok_or(Error::OffsetOverflow)?,
+            )
+            .ok_or(Error::OffsetOverflow)?;
+        record.extend_from_slice(&bytes[field.data_start..split]);
+        if let CurveKeyEdit::Insert { key, .. } = edit {
+            let inserted = inserted_curve_field_bytes(field, key, strings, secondary)?;
+            if inserted.len() != field.element_size {
+                return Err(Error::InvalidWrite {
+                    reason: format!(
+                        "animation curve field {:?} encoded {} bytes instead of {}",
+                        field.name,
+                        inserted.len(),
+                        field.element_size
+                    ),
+                });
+            }
+            record.extend_from_slice(&inserted);
+            record.extend_from_slice(&bytes[split..field.data_end]);
+        } else {
+            let after = split
+                .checked_add(field.element_size)
+                .ok_or(Error::OffsetOverflow)?;
+            record.extend_from_slice(&bytes[after..field.data_end]);
+        }
+        record.extend_from_slice(&bytes[field.data_end..field.end]);
+    }
+    bytes.splice(layout.start..layout.end, record);
+    Ok(())
+}
+
+#[cfg(feature = "write")]
+fn prepare_curve_insert_strings(
+    bytes: &mut Vec<u8>,
+    insertion: &AnimationCurveKeyframeInsert,
+    limits: Limits,
+) -> Result<()> {
+    for value in [insertion.tag.as_deref(), insertion.interpolation.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        ensure_mixer_string(bytes, value, limits)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "write")]
+fn edit_primary_curve_key(
+    bytes: &mut Vec<u8>,
+    curve_kind: &str,
+    axis: Option<&str>,
+    edit: &CurveKeyEdit<'_>,
+    limits: Limits,
+) -> Result<(AnimationCurveKeyframe, Vec<AnimationCurveKeyframe>)> {
+    if let CurveKeyEdit::Insert { key, .. } = edit {
+        if !key.time_60hz.is_finite() || !key.value.is_finite() {
+            return Err(Error::InvalidWrite {
+                reason: "animation curve insertion must use finite numeric values".to_owned(),
+            });
+        }
+        prepare_curve_insert_strings(bytes, key, limits)?;
+    }
+    let (strings, data_start) = parse_string_table_with_data_start(bytes, limits)?;
+    let fcurve = string_id_optional(&strings, "FCurve").ok_or_else(|| Error::InvalidWrite {
+        reason: "animation mixer has no FCurve string".to_owned(),
+    })?;
+    let mut found = None;
+    for start in data_start..=bytes.len().saturating_sub(12) {
+        let Some(header) = animation_curve_header(bytes, start, &strings, fcurve) else {
+            continue;
+        };
+        if header.kind != curve_kind || header.axis.as_deref() != axis {
+            continue;
+        }
+        if found.is_some() {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "animation mixer has multiple {curve_kind:?} curves for axis {axis:?}"
+                ),
+            });
+        }
+        let mut cursor = header.cursor;
+        let curve = parse_animation_curve_fields(
+            bytes,
+            &strings,
+            &mut cursor,
+            header.kind.clone(),
+            header.axis.clone(),
+            limits,
+        )?;
+        let removed = match edit {
+            CurveKeyEdit::Insert { .. } => None,
+            CurveKeyEdit::Remove { index } => Some(
+                curve.keyframes.get(*index).cloned().ok_or_else(|| {
+                    Error::InvalidWrite {
+                        reason: format!(
+                            "animation curve {curve_kind:?} has {} keys, so index {index} is invalid",
+                            curve.keyframes.len()
+                        ),
+                    }
+                })?,
+            ),
+        };
+        let layout = animation_curve_record_layout(
+            bytes,
+            &strings,
+            start,
+            &header,
+            curve.keyframes.len(),
+            false,
+        )?;
+        found = Some((removed, layout));
+    }
+    let (removed, layout) = found.ok_or_else(|| Error::InvalidWrite {
+        reason: format!("animation mixer has no {curve_kind:?} curve for axis {axis:?}"),
+    })?;
+    rebuild_curve_record(bytes, &layout, edit, &strings, false)?;
+    let curves = parse_animation_curves(bytes, limits)?;
+    let matching = curves
+        .into_iter()
+        .filter(|curve| curve.kind == curve_kind && curve.axis.as_deref() == axis)
+        .collect::<Vec<_>>();
+    let [curve] = matching.as_slice() else {
+        return Err(Error::InvalidWrite {
+            reason: "edited primary animation curve did not round-trip uniquely".to_owned(),
+        });
+    };
+    let affected = match edit {
+        CurveKeyEdit::Insert { index, .. } => {
+            curve
+                .keyframes
+                .get(*index)
+                .cloned()
+                .ok_or_else(|| Error::InvalidWrite {
+                    reason: "inserted animation curve key did not round-trip".to_owned(),
+                })?
+        }
+        CurveKeyEdit::Remove { .. } => removed.expect("remove edit captured its original key"),
+    };
+    Ok((affected, curve.keyframes.clone()))
+}
+
+#[cfg(feature = "write")]
+fn edit_secondary_curve_key(
+    bytes: &mut Vec<u8>,
+    curve_kind: &str,
+    axis: Option<&str>,
+    edit: &CurveKeyEdit<'_>,
+    limits: Limits,
+) -> Result<bool> {
+    if let CurveKeyEdit::Insert { key, .. } = edit {
+        prepare_curve_insert_strings(bytes, key, limits)?;
+    }
+    let (strings, data_start) = parse_string_table_with_data_start(bytes, limits)?;
+    let Some(fcurve) = string_id_optional(&strings, "FCurve") else {
+        return Ok(false);
+    };
+    let Some(int32_array) = string_id_optional(&strings, "Int32[]") else {
+        return Ok(false);
+    };
+    let mut found = None;
+    for start in data_start..=bytes.len().saturating_sub(12) {
+        let Some(header) = animation_curve_header(bytes, start, &strings, fcurve) else {
+            continue;
+        };
+        if header.kind != curve_kind || header.axis.as_deref() != axis {
+            continue;
+        }
+        let mut cursor = header.cursor;
+        let field_count = read_u32(bytes, &mut cursor)?;
+        if !secondary_field_header_matches(bytes, cursor, strings.len(), int32_array) {
+            continue;
+        }
+        if found.is_some() {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "secondary animation mixer has multiple {curve_kind:?} curves for axis {axis:?}"
+                ),
+            });
+        }
+        let curve = parse_secondary_animation_curve_fields(
+            bytes,
+            &strings,
+            &mut cursor,
+            header.kind.clone(),
+            header.axis.clone(),
+            field_count,
+            limits,
+        )?;
+        let layout = animation_curve_record_layout(
+            bytes,
+            &strings,
+            start,
+            &header,
+            curve.keyframes.len(),
+            true,
+        )?;
+        found = Some(layout);
+    }
+    let Some(layout) = found else {
+        return Ok(false);
+    };
+    rebuild_curve_record(bytes, &layout, edit, &strings, true)?;
+    let matching = parse_secondary_animation_curves(bytes, limits)?
+        .into_iter()
+        .filter(|curve| curve.kind == curve_kind && curve.axis.as_deref() == axis)
+        .count();
+    if matching != 1 {
+        return Err(Error::InvalidWrite {
+            reason: "edited secondary animation curve did not round-trip uniquely".to_owned(),
+        });
+    }
+    Ok(true)
 }
 
 #[cfg(feature = "write")]
@@ -4728,10 +6355,17 @@ mod tests {
                     TrackKind INTEGER, TrackOptionFlag INTEGER,
                     OpaqueColumn BLOB
                  );
-                 CREATE TABLE Layer (MainId INTEGER, LayerUuid TEXT);
-                 INSERT INTO Layer VALUES
-                    (5, '11111111-1111-1111-1111-111111111111'),
-                    (6, '22222222-2222-2222-2222-222222222222');
+                 CREATE TABLE Layer (
+                     MainId INTEGER, LayerUuid TEXT, LayerType INTEGER,
+                     LayerFolder INTEGER, AnimationFolder INTEGER, LayerFirstChildIndex INTEGER,
+                     LayerNextIndex INTEGER, LayerName TEXT
+                  );
+                  INSERT INTO Layer VALUES
+                     (5, '11111111-1111-1111-1111-111111111111', 0, 17, 1, 8, 0, 'template'),
+                     (6, '22222222-2222-2222-2222-222222222222', 1, 0, 0, 0, 0, 'plain'),
+                     (7, '44444444-4444-4444-4444-444444444444', 0, 17, 1, 8, 0, 'target'),
+                     (8, '55555555-5555-5555-5555-555555555555', 1, 0, 0, 0, 9, 'A'),
+                     (9, '66666666-6666-6666-6666-666666666666', 1, 0, 0, 0, 0, 'B');
                  CREATE TABLE ElemScheme (TableName TEXT, MaxIndex INTEGER);
                  INSERT INTO ElemScheme VALUES ('Track', 1);
                  CREATE TABLE ExternalChunk (ExternalID BLOB, Offset INTEGER);",
@@ -4962,6 +6596,392 @@ mod tests {
             .unwrap();
         assert!(primary_size > binc().len() as i64);
         assert!(secondary_size > secondary_binc().len() as i64);
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn inserts_and_removes_primary_and_secondary_curve_keys() {
+        let source = writable_animation_sample();
+        let mut clip = ClipFile::open(Cursor::new(source)).unwrap();
+        let mut writer = clip.writer().unwrap();
+        let insertion = AnimationCurveKeyframeInsert::new(30.0, 2.0)
+            .with_tag("C")
+            .with_interpolation("Linear")
+            .with_slopes(0.0, 0.0)
+            .with_revise_constant(1);
+
+        let inserted = writer
+            .insert_animation_curve_keyframe(
+                1,
+                "ImageCelName",
+                None,
+                1,
+                &insertion,
+                Limits::default(),
+            )
+            .unwrap();
+        assert_eq!(inserted.time_60hz(), 30.0);
+        assert_eq!(inserted.tag(), Some("C"));
+        let removed = writer
+            .remove_animation_curve_keyframe(1, "ImageCelName", None, 1, Limits::default())
+            .unwrap();
+        assert_eq!(removed.time_60hz(), 30.0);
+        assert_eq!(removed.tag(), Some("C"));
+
+        let mut output = Vec::new();
+        writer.write_to(&mut output).unwrap();
+        let mut rewritten = ClipFile::open(Cursor::new(output)).unwrap();
+        let database = rewritten.open_database().unwrap();
+        let animation = rewritten
+            .read_animation(&database, Limits::default())
+            .unwrap()
+            .unwrap();
+        let track = &animation.animation_tracks()[0];
+        assert_eq!(track.curves()[0].keyframes().len(), 2);
+        assert_eq!(track.secondary_curves()[0].keyframes().len(), 2);
+        assert_eq!(
+            track
+                .values()
+                .iter()
+                .find(|entry| entry.name() == "ImageCelName")
+                .unwrap()
+                .value(),
+            &AnimationTrackValue::IndexedText {
+                text: "A".to_owned(),
+                numeric_value: 0,
+            }
+        );
+        let (primary_size, secondary_size): (i64, i64) = database
+            .connection()
+            .query_row(
+                "SELECT TrackActionMixerSize, TrackActionMixer2Size FROM Track WHERE MainId = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(primary_size >= binc().len() as i64);
+        assert!(secondary_size >= secondary_binc().len() as i64);
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn clones_and_normalizes_an_image_cel_track() {
+        let source = writable_animation_sample();
+        let mut clip = ClipFile::open(Cursor::new(source)).unwrap();
+        let mut writer = clip.writer().unwrap();
+        let options = ImageCelTrackCloneOptions::new([
+            ImageCelTrackKeyframe::new(0.0, 0, "A"),
+            ImageCelTrackKeyframe::new(30.0, 1, "B"),
+        ]);
+
+        let summary = writer
+            .clone_image_cel_track_from_template(1, 1, 7, &options, Limits::default())
+            .unwrap();
+        assert_eq!(summary.track_id(), 2);
+        assert_eq!(writer.addition_count(), 2);
+
+        let mut output = Vec::new();
+        writer.write_to(&mut output).unwrap();
+        let mut rewritten = ClipFile::open(Cursor::new(output)).unwrap();
+        rewritten.validate().unwrap();
+        let database = rewritten.open_database().unwrap();
+        rewritten.validate_external_index(&database).unwrap();
+        let animation = rewritten
+            .read_animation(&database, Limits::default())
+            .unwrap()
+            .unwrap();
+        let track = animation.track_for_layer(7).unwrap();
+        assert_eq!(track.keyframes().len(), 2);
+        assert_eq!(track.keyframes()[0].tag(), "A");
+        assert_eq!(track.keyframes()[1].time_60hz(), 30.0);
+        assert_eq!(track.keyframes()[1].tag(), "B");
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn checks_image_cel_numeric_f32_boundaries_without_saturating_casts() {
+        assert!(u32_is_exactly_representable_as_f32(0));
+        assert!(u32_is_exactly_representable_as_f32(16_777_216));
+        assert!(!u32_is_exactly_representable_as_f32(16_777_217));
+        assert!(u32_is_exactly_representable_as_f32(u32::MAX - 255));
+        assert!(!u32_is_exactly_representable_as_f32(u32::MAX));
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn rejects_image_cel_clone_for_a_non_animation_folder() {
+        let source = writable_animation_sample();
+        let mut clip = ClipFile::open(Cursor::new(source)).unwrap();
+        let mut writer = clip.writer().unwrap();
+        writer
+            .database()
+            .connection()
+            .execute("UPDATE Layer SET AnimationFolder = 0 WHERE MainId = 7", [])
+            .unwrap();
+        let options = ImageCelTrackCloneOptions::new([
+            ImageCelTrackKeyframe::new(0.0, 0, "A"),
+            ImageCelTrackKeyframe::new(30.0, 1, "B"),
+        ]);
+
+        assert!(matches!(
+            writer.clone_image_cel_track_from_template(1, 1, 7, &options, Limits::default()),
+            Err(Error::InvalidWrite { .. })
+        ));
+        assert_eq!(writer.addition_count(), 0);
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn rejects_inconsistent_primary_and_secondary_curve_keys() {
+        let primary = binc();
+        let secondary = secondary_binc();
+        assert!(
+            validate_matching_secondary_curve_keys(
+                &primary,
+                &secondary,
+                "ImageCelName",
+                None,
+                Limits::default(),
+            )
+            .unwrap()
+        );
+
+        let mut count_mismatch = secondary.clone();
+        assert!(
+            edit_secondary_curve_key(
+                &mut count_mismatch,
+                "ImageCelName",
+                None,
+                &CurveKeyEdit::Remove { index: 1 },
+                Limits::default(),
+            )
+            .unwrap()
+        );
+        assert!(matches!(
+            validate_matching_secondary_curve_keys(
+                &primary,
+                &count_mismatch,
+                "ImageCelName",
+                None,
+                Limits::default(),
+            ),
+            Err(Error::InvalidWrite { .. })
+        ));
+
+        let mut time_mismatch = secondary.clone();
+        patch_secondary_curve_numeric(
+            &mut time_mismatch,
+            "ImageCelName",
+            None,
+            0,
+            1.0,
+            0.0,
+            Limits::default(),
+        )
+        .unwrap();
+        assert!(matches!(
+            validate_matching_secondary_curve_keys(
+                &primary,
+                &time_mismatch,
+                "ImageCelName",
+                None,
+                Limits::default(),
+            ),
+            Err(Error::InvalidWrite { .. })
+        ));
+
+        let mut tag_mismatch = secondary;
+        patch_secondary_curve_tag(&mut tag_mismatch, 0, "B", Limits::default()).unwrap();
+        assert!(matches!(
+            validate_matching_secondary_curve_keys(
+                &primary,
+                &tag_mismatch,
+                "ImageCelName",
+                None,
+                Limits::default(),
+            ),
+            Err(Error::InvalidWrite { .. })
+        ));
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn rolls_back_image_cel_clone_when_normalization_fails() {
+        let source = writable_animation_sample();
+        let mut clip = ClipFile::open(Cursor::new(source)).unwrap();
+        let mut writer = clip.writer().unwrap();
+        let options = ImageCelTrackCloneOptions::new([ImageCelTrackKeyframe::new(30.0, 0, "A")]);
+
+        assert!(matches!(
+            writer.clone_image_cel_track_from_template(1, 1, 7, &options, Limits::default(),),
+            Err(Error::InvalidWrite { .. })
+        ));
+        assert_eq!(writer.addition_count(), 0);
+        assert_eq!(
+            writer
+                .database()
+                .connection()
+                .query_row("SELECT count(*) FROM Track", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            writer
+                .database()
+                .connection()
+                .query_row(
+                    "SELECT TrackNextIndex FROM Track WHERE MainId = 1",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            writer
+                .database()
+                .connection()
+                .query_row(
+                    "SELECT MaxIndex FROM ElemScheme WHERE TableName = 'Track'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn rejects_incomplete_key_insertions_without_pending_changes() {
+        let source = writable_animation_sample();
+        let mut clip = ClipFile::open(Cursor::new(source)).unwrap();
+        let mut writer = clip.writer().unwrap();
+
+        assert!(matches!(
+            writer.insert_animation_curve_keyframe(
+                1,
+                "ImageCelName",
+                None,
+                1,
+                &AnimationCurveKeyframeInsert::new(30.0, 2.0),
+                Limits::default(),
+            ),
+            Err(Error::InvalidWrite { .. })
+        ));
+        assert_eq!(writer.replacement_count(), 0);
+        assert_eq!(writer.addition_count(), 0);
+        assert!(
+            writer
+                .remove_animation_curve_keyframe(1, "ImageCelName", None, 1, Limits::default(),)
+                .is_ok()
+        );
+        assert!(matches!(
+            writer.remove_animation_curve_keyframe(1, "ImageCelName", None, 0, Limits::default(),),
+            Err(Error::InvalidWrite { .. })
+        ));
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn removes_track_and_repairs_the_timeline_chain() {
+        let source = writable_animation_sample();
+        let mut clip = ClipFile::open(Cursor::new(source)).unwrap();
+        let mut writer = clip.writer().unwrap();
+        writer
+            .clone_animation_track_from_template(1, 1, 6, Limits::default())
+            .unwrap();
+
+        let removed = writer
+            .remove_animation_track(1, 1, Limits::default())
+            .unwrap();
+        assert_eq!(removed.track_id(), 1);
+        assert_eq!(removed.previous_track_id(), None);
+        assert_eq!(removed.next_track_id(), Some(2));
+        assert!(removed.retained_primary_mixer_identifier().is_some());
+        assert_eq!(
+            writer
+                .database()
+                .connection()
+                .query_row(
+                    "SELECT FirstTrack FROM TimeLine WHERE MainId = 1",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            writer
+                .database()
+                .connection()
+                .query_row("SELECT count(*) FROM Track", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            writer
+                .database()
+                .connection()
+                .query_row(
+                    "SELECT MaxIndex FROM ElemScheme WHERE TableName = 'Track'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn enforces_animation_item_limits_before_clone_or_removal_chain_changes() {
+        let source = writable_animation_sample();
+        let mut clip = ClipFile::open(Cursor::new(source)).unwrap();
+        let mut writer = clip.writer().unwrap();
+
+        assert!(matches!(
+            writer.clone_animation_track_from_template(
+                1,
+                1,
+                6,
+                Limits::default().with_max_animation_items(1),
+            ),
+            Err(Error::LimitExceeded {
+                resource: "animation tracks after clone",
+                value: 2,
+                limit: 1,
+            })
+        ));
+        assert_eq!(writer.addition_count(), 0);
+        assert!(matches!(
+            writer.remove_animation_track(1, 1, Limits::default().with_max_animation_items(0),),
+            Err(Error::LimitExceeded {
+                resource: "animation timeline tracks",
+                value: 1,
+                limit: 0,
+            })
+        ));
+        assert_eq!(
+            writer
+                .database()
+                .connection()
+                .query_row("SELECT count(*) FROM Track", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            writer
+                .database()
+                .connection()
+                .query_row(
+                    "SELECT FirstTrack FROM TimeLine WHERE MainId = 1",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
     }
 
     #[cfg(feature = "write")]

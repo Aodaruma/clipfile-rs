@@ -34,14 +34,17 @@ mod vector;
 #[cfg(feature = "write")]
 mod writer;
 
-#[cfg(all(feature = "animation", feature = "write"))]
-pub use animation::AnimationTrackCloneSummary;
 #[cfg(feature = "animation")]
 pub use animation::{
     Animation, AnimationCurve, AnimationCurveKeyframe, AnimationCurveKeyframeValues,
     AnimationTrack, AnimationTrackKind, AnimationTrackValue, AnimationTrackValueEntry,
     Camera2DLayerData, Camera2DPoint, Camera2DTrackValues, Camera2DTransform, CelKeyframe,
     CelTrack, SecondaryAnimationCurve, SecondaryAnimationCurveKeyframe, Timeline,
+};
+#[cfg(all(feature = "animation", feature = "write"))]
+pub use animation::{
+    AnimationCurveKeyframeInsert, AnimationTrackCloneSummary, AnimationTrackRemovalSummary,
+    ImageCelTrackCloneOptions, ImageCelTrackKeyframe,
 };
 #[cfg(feature = "sqlite")]
 pub use cmc::{CmcFile, CmcNode};
