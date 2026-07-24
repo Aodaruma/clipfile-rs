@@ -21,7 +21,7 @@ templateなしのstyle/brush/animation metadata生成、派生raster cacheとcan
 - [x] `cargo test --all-features`
 - [x] `cargo test --doc --all-features`
 - [x] `cargo check --examples --all-features`
-- [ ] 宣言MSRVとLinux/Windows/macOS stable CI
+- [x] 宣言MSRVとLinux/Windows/macOS stable CI
 - [x] `cargo package` とpackage内容の機密・ローカルfixture混入確認
 - [x] 0.5系に対する公開API差分とSemVer方針の最終確認
 - [x] 新規raster/vector/text/animation出力のアプリ再読込確認
