@@ -27,6 +27,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   raw link preservation, and traversal-safe page-path resolution.
 - Bounded decoding of all nine observed correction-layer kinds, including
   fixed-point raw values, gradient curves, and opaque future-kind fallback.
+- Validated vector-ruler references and typed, bounded metadata for all nine
+  observed special-ruler table kinds and perspective vanishing-point chains.
 
 ### Documentation
 

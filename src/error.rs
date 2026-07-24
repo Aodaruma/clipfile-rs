@@ -128,6 +128,12 @@ pub enum Error {
         /// Human-readable details.
         reason: String,
     },
+    /// Ruler metadata or its linked lists are structurally inconsistent.
+    #[cfg(feature = "sqlite")]
+    InvalidRuler {
+        /// Human-readable details.
+        reason: String,
+    },
     /// Raster metadata or decoded pixels are structurally inconsistent.
     #[cfg(feature = "raster")]
     InvalidRaster {
@@ -233,6 +239,10 @@ impl fmt::Display for Error {
             #[cfg(feature = "sqlite")]
             Self::InvalidCorrection { reason } => {
                 write!(formatter, "invalid correction-layer data: {reason}")
+            }
+            #[cfg(feature = "sqlite")]
+            Self::InvalidRuler { reason } => {
+                write!(formatter, "invalid ruler data: {reason}")
             }
             #[cfg(feature = "raster")]
             Self::InvalidRaster { reason } => write!(formatter, "invalid raster data: {reason}"),

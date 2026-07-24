@@ -39,10 +39,10 @@
 
 ## レイヤー種別と特殊機能
 
-- 状態: 補正レイヤーparameterは解明・実装済み、その他は部分的
-- 観測: `LayerType` は複数の数値を取り、サンプル間でスキーマ列にも差がある。匿名のベクターレイヤーでは `LayerType=0`、`VectorObjectList` 1行、40-byteの外部ID、268-byteの未分類外部本体を確認した。同レイヤーの描画Mipmapだけでは実際の線を復元できない例だった。匿名の単一テキストでは `LayerType=0`、`TextLayerType=0`、UTF-8本文BLOB、1,029-byteの属性BLOB、属性version 1を確認し、追加配列はNULLだった。公開サンプルの補正レイヤー32件は `LayerType=4098` で、`FilterLayerInfo` kind 1～9をすべて末尾まで復号できた。
-- 現在の扱い: レイヤー種別の元の整数値を保持し、ベクターは外部本体まで上限付きで取得する。テキストはUTF-8本文とオブジェクト別属性の境界まで検証するが、各属性の意味は不透明なバイト列として保持する。補正レイヤーは `Database::correction_layer` から9種の型付きparameterと元payloadを返し、未知kindはpayloadを保持する。
-- 次の調査: ベクター本体の線・制御点・ブラシ属性と、テキストのフォント・段落・変形属性を差分比較する。3D、定規も1種類ずつ含む最小コーパスを作成する。
+- 状態: 補正レイヤーparameterと特殊定規metadataは解明・実装済み、その他は部分的
+- 観測: `LayerType` は複数の数値を取り、サンプル間でスキーマ列にも差がある。匿名のベクターレイヤーでは `LayerType=0`、`VectorObjectList` 1行、40-byteの外部ID、268-byteの未分類外部本体を確認した。同レイヤーの描画Mipmapだけでは実際の線を復元できない例だった。匿名の単一テキストでは `LayerType=0`、`TextLayerType=0`、UTF-8本文BLOB、1,029-byteの属性BLOB、属性version 1を確認し、追加配列はNULLだった。公開サンプルの補正レイヤー32件は `LayerType=4098` で、`FilterLayerInfo` kind 1～9をすべて末尾まで復号できた。定規サンプル18レイヤーではベクター定規参照8件と特殊manager 10件があり、9定規表の16定規と透視消失点chainを全件到達できた。
+- 現在の扱い: レイヤー種別の元の整数値を保持し、ベクターは外部本体まで上限付きで取得する。テキストはUTF-8本文とオブジェクト別属性の境界まで検証するが、各属性の意味は不透明なバイト列として保持する。補正レイヤーは `Database::correction_layer` から9種の型付きparameterと元payloadを返し、未知kindはpayloadを保持する。定規は `Database::ruler_layer` で所有関係・chain・curve点・guide長を検証する。
+- 次の調査: ベクター本体の線・制御点・ブラシ属性と、テキストのフォント・段落・変形属性を差分比較する。3Dも1種類ずつ含む最小コーパスを作成する。定規はcurve header 4語と透視guide BLOBの意味を差分比較する。
 
 ## 1-bitラスターデータ
 

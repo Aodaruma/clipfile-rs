@@ -8,6 +8,7 @@
 - `Canvas`: ID、単位、幅・高さ、解像度、ルート・現在レイヤーID
 - `CanvasPreview`: キャンバスID、形式値、寸法、エンコード済みプレビュー
 - `VectorDataSource`: ベクターデータ行、所有キャンバス・レイヤーID、不透明な外部ID
+- `RulerLayerData` / `Ruler`: ベクター定規参照、9種の特殊定規、曲線点・透視消失点chain
 - `TextLayerData` / `TextObjectData`: UTF-8本文、所有レイヤー、形式値、オブジェクト別の不透明な属性
 - `CorrectionLayerData` / `Correction`: 補正レイヤーの形式値、9種の型付きparameter、元の属性payload
 - `Animation` / `Timeline` / `AnimationTrack` / `AnimationCurve` / `AnimationTrackValueEntry` / `CelTrack`: 再生範囲、fps、raw track kind、レイヤー対応、汎用FCurve、現在値、セル選択キー
@@ -37,6 +38,8 @@
 
 `Database::vector_data_sources(layer_id, limits)` は、`VectorObjectList.LayerId` が一致する行を列挙する。件数は `Limits::max_vector_objects` で制限する。各外部本体は `ClipFile::read_vector_data` で `Limits::max_vector_data_bytes` を適用して取得できる。現時点ではベクター本体の意味を解釈せず、`VectorDataSource` の所有情報と外部ID、および元バイト列を保持する。
 
+`Database::ruler_layer(layer_id, limits)` は、`Layer.RulerVectorIndex` の所有layer・canvas、または `SpecialRulerManager` と各 `First*` / `NextIndex` chainを検証する。parallel、curve parallel、multiple curve、radial line、radial curve、concentric circle、guide、perspective、symmetryの9テーブルを型付きで返す。curve `PointData` はbig-endian header・件数・有限な座標・末尾境界を検証し、透視定規は消失点chainと `GuideNumber × GuideDataSize` を照合する。ベクター定規の線本体は既存の不透明なvector data APIから取得する。
+
 `Database::text_layer(layer_id, limits)` は、`TextLayerString` をUTF-8として検証し、対応する `TextLayerAttributes` と組にして返す。追加オブジェクトの配列は、4-byte little-endian長と本体の繰り返しとして境界を検証する。文字列と属性の件数一致を必須とし、総バイト数を `Limits::max_text_bytes`、オブジェクト数を `Limits::max_text_objects` で制限する。属性、追加属性、version値は意味を決め付けず元の値を保持する。
 
 `Database::correction_layer(layer_id, limits)` は、`Layer.FilterLayerInfo` のbig-endian kind・section長を検証する。確認済みkind 1～9を、明るさ・コントラスト、レベル補正、トーンカーブ、色相・彩度・明度、カラーバランス、階調反転、ポスタリゼーション、二値化、グラデーションマップとして返す。レベル値・曲線座標・色・不透明度のraw固定小数点word、元payload、未知kindのpayloadを保持し、1 payloadのバイト数とchannel・stop・point数を `Limits` で制限する。
@@ -63,4 +66,4 @@
 
 `LayerType` はビットフラグとして複数用途を表し、`LayerComposite` にも将来値が追加され得る。このため `LayerKind` と `BlendMode` は閉じたenumにせず、`raw()` で元の整数を必ず返す。`is_pixel()` などは、現在確認できたビットだけを判定する補助APIである。
 
-ベクターは外部本体への安全な到達まで対応したが、線・制御点・ブラシ属性はまだ解釈しない。テキストは本文と属性レコードの境界まで対応したが、フォント・段落・変形属性は未解釈である。補正レイヤーは9種の属性parameterまで対応した。アニメーションはprimary/secondary mixerのFCurveとinline value map、タイムラプスはfull key frameとdelta patchを含む内部WebP frame索引まで対応したが、カメラ・変形の意味付けと `GMIK` 側parameterは未解釈である。タイムラプスの実時間はファイルに存在しないため復元対象にしない。3D、定規の詳細BLOBも同様に未解釈である。これらは元のDBへ `Database::connection()` で読み取りアクセスできるが、安定した意味モデルとしては、最小差分コーパスで検証後に追加する。
+ベクターは外部本体への安全な到達、定規は表間参照と特殊定規parameterまで対応したが、ベクター線本体・制御点・ブラシ属性はまだ解釈しない。テキストは本文と属性レコードの境界まで対応したが、フォント・段落・変形属性は未解釈である。補正レイヤーは9種の属性parameterまで対応した。アニメーションはprimary/secondary mixerのFCurveとinline value map、タイムラプスはfull key frameとdelta patchを含む内部WebP frame索引まで対応したが、カメラ・変形の意味付けと `GMIK` 側parameterは未解釈である。タイムラプスの実時間はファイルに存在しないため復元対象にしない。3Dの詳細BLOBも同様に未解釈である。これらは元のDBへ `Database::connection()` で読み取りアクセスできるが、安定した意味モデルとしては、最小差分コーパスで検証後に追加する。

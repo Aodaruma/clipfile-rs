@@ -23,6 +23,8 @@ mod model;
 #[cfg(feature = "raster")]
 mod raster;
 #[cfg(feature = "sqlite")]
+mod ruler;
+#[cfg(feature = "sqlite")]
 mod text;
 #[cfg(feature = "timelapse")]
 mod timelapse;
@@ -63,6 +65,10 @@ pub use model::{BlendMode, Canvas, CanvasPreview, Document, Layer, LayerKind, La
 pub use raster::{
     DecodedTile, OffscreenAttributes, PixelFormat, PixelPacking, RasterDataState, RasterImage,
     RasterSource,
+};
+#[cfg(feature = "sqlite")]
+pub use ruler::{
+    Ruler, RulerCurveData, RulerCurvePoint, RulerKind, RulerLayerData, RulerPoint, RulerVanishPoint,
 };
 #[cfg(feature = "sqlite")]
 pub use text::{TextLayerData, TextObjectData};

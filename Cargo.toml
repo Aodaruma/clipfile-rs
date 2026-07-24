@@ -36,6 +36,10 @@ required-features = ["sqlite"]
 name = "inspect_corrections"
 required-features = ["sqlite"]
 
+[[example]]
+name = "inspect_rulers"
+required-features = ["sqlite"]
+
 [lints.rust]
 unsafe_code = "forbid"
 

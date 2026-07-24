@@ -28,6 +28,8 @@ Implemented:
 - high-level project, canvas, layer, and validated layer-tree models; and
 - bounded `CanvasPreview` PNG extraction; and
 - bounded retrieval of opaque vector-layer external data; and
+- validated vector-ruler references and typed metadata for all nine observed
+  special-ruler table kinds; and
 - bounded UTF-8 text-layer content with opaque per-object attributes; and
 - bounded correction-layer decoding for all nine observed adjustment kinds,
   with raw payload preservation; and
@@ -96,6 +98,7 @@ cargo run --features animation --example inspect -- path/to/drawing.clip --anima
 cargo run --features timelapse --example inspect -- path/to/drawing.clip --timelapse
 cargo run --features sqlite --example inspect_cmc -- path/to/project.cmc
 cargo run --features sqlite --example inspect_corrections -- path/to/drawing.clip
+cargo run --features sqlite --example inspect_rulers -- path/to/drawing.clip
 ```
 
 The optional `sqlite` feature uses a bundled SQLite build for reproducible
@@ -121,6 +124,12 @@ PNG IHDR dimensions when the stored bytes are PNG.
 a layer. `ClipFile::read_vector_data` then retrieves each opaque external body
 under configurable row-count and byte-size limits. The bytes are intentionally
 not interpreted until the vector-body structure is independently verified.
+
+`Database::ruler_layer` validates a layer's vector-ruler reference or its
+`SpecialRulerManager` and linked ruler rows. Parallel, curve, radial,
+concentric-circle, guide, perspective, and symmetry metadata are typed; curve
+point payloads and perspective vanishing-point guide records are bounded.
+Vector-ruler geometry remains available through the opaque vector-data API.
 
 `Database::text_layer` validates stored text as UTF-8 and pairs each string
 with its original opaque attribute record. Length-prefixed extra-object arrays,
