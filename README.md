@@ -36,14 +36,16 @@ Implemented:
 - optional timeline, generic primary and double-precision secondary
   action-mixer curves, image-cel selection, audio/play-time curve decoding,
   and typed inline track values; and
+- validated 2D-camera layers, current transform snapshots, typed track values,
+  and axis-qualified position/center curves; and
 - optional validated time-lapse manager/record/blob chains with bounded reads
   and streaming decompression, plus streaming internal WebP frame indexing; and
 - optional `Offscreen.Attribute`, zlib tile, and RGBA/grayscale raster decoding.
 
 Not implemented yet:
 
-- semantic vector/text-attribute decoding, camera/transform semantics beyond
-  exposed animation curves, or time-lapse playback/timestamp semantics; and
+- semantic vector/text-attribute decoding, 3D data, or time-lapse
+  playback/timestamp semantics; and
 - writing or modifying files.
 
 See [the format analysis](docs/format-analysis.md) and
@@ -157,6 +159,16 @@ values while preserving future value types as opaque payloads. Secondary
 metadata, and preserve their `Double[]` frame, value, and slope arrays as
 `f64`. Verified raw-kind helpers cover non-cel folders, image-cel folders,
 static-image layers, paper, play-time control, and audio control.
+
+Verified 2D-camera tracks use raw kind `2005`. `ImageCenter` and
+`ImagePosition` current values are exposed as two-dimensional values, while
+their `Axis=X/Y` primary and secondary curves remain distinct through
+`AnimationCurve::axis`. `Database::camera_2d_layer` validates the camera
+folder bit, bounded transform snapshot, dimensions, finite
+position/scale/rotation values, and transformed frame corners;
+`ClipFile::read_animation` cross-validates kind-`2005` tracks with those
+layers. Unnamed header words and the complete source payload remain available
+for forward-compatible inspection.
 
 The `timelapse` feature validates `TimeLapseManager`, `TimeLapseRecord`, and
 `TimeLapseBlob` linked lists, including canvas ownership, contiguous decoded

@@ -139,8 +139,13 @@ fn inspect_animation_if_requested<R: std::io::Read + std::io::Seek>(
                 .iter()
                 .filter(|track| track.secondary_action_mixer_present())
                 .count();
+            let camera_tracks = animation
+                .animation_tracks()
+                .iter()
+                .filter(|track| track.kind().is_camera_2d())
+                .count();
             println!(
-                "animation: timeline {}, {} fps, frames {}..={}, {} tracks, {} curves / {} keys, {} values, {} secondary mixers, {} cel tracks / {} selected keys",
+                "animation: timeline {}, {} fps, frames {}..={}, {} tracks, {} curves / {} keys, {} values, {} secondary mixers, {} camera tracks, {} cel tracks / {} selected keys",
                 animation.timeline().id(),
                 animation.timeline().frame_rate(),
                 animation.timeline().start_frame(),
@@ -150,9 +155,34 @@ fn inspect_animation_if_requested<R: std::io::Read + std::io::Seek>(
                 curve_keys,
                 values,
                 secondary_mixers,
+                camera_tracks,
                 animation.tracks().len(),
                 keyframes,
             );
+            for track in animation
+                .animation_tracks()
+                .iter()
+                .filter(|track| track.kind().is_camera_2d())
+            {
+                let Some(layer_id) = track.layer_id() else {
+                    continue;
+                };
+                let Some(layer) = database.camera_2d_layer(layer_id, clip.limits())? else {
+                    continue;
+                };
+                let transform = layer.transform();
+                println!(
+                    "2D camera: layer {}, frame {}x{}, position ({}, {}), {} corners, {} primary / {} secondary curves",
+                    layer_id,
+                    transform.width(),
+                    transform.height(),
+                    transform.position().x(),
+                    transform.position().y(),
+                    transform.corners().len(),
+                    track.curves().len(),
+                    track.secondary_curves().len(),
+                );
+            }
         } else {
             println!("animation: none");
         }

@@ -39,9 +39,9 @@
 
 ## レイヤー種別と特殊機能
 
-- 状態: 補正レイヤーparameterと特殊定規metadataは解明・実装済み、その他は部分的
+- 状態: 補正レイヤーparameter、特殊定規metadata、2Dカメラは解明・実装済み、その他は部分的
 - 観測: `LayerType` は複数の数値を取り、サンプル間でスキーマ列にも差がある。匿名のベクターレイヤーでは `LayerType=0`、`VectorObjectList` 1行、40-byteの外部ID、268-byteの未分類外部本体を確認した。同レイヤーの描画Mipmapだけでは実際の線を復元できない例だった。匿名の単一テキストでは `LayerType=0`、`TextLayerType=0`、UTF-8本文BLOB、1,029-byteの属性BLOB、属性version 1を確認し、追加配列はNULLだった。公開サンプルの補正レイヤー32件は `LayerType=4098` で、`FilterLayerInfo` kind 1～9をすべて末尾まで復号できた。定規サンプル18レイヤーではベクター定規参照8件と特殊manager 10件があり、9定規表の16定規と透視消失点chainを全件到達できた。
-- 現在の扱い: レイヤー種別の元の整数値を保持し、ベクターは外部本体まで上限付きで取得する。テキストはUTF-8本文とオブジェクト別属性の境界まで検証するが、各属性の意味は不透明なバイト列として保持する。補正レイヤーは `Database::correction_layer` から9種の型付きparameterと元payloadを返し、未知kindはpayloadを保持する。定規は `Database::ruler_layer` で所有関係・chain・curve点・guide長を検証する。
+- 現在の扱い: レイヤー種別の元の整数値を保持し、ベクターは外部本体まで上限付きで取得する。テキストはUTF-8本文とオブジェクト別属性の境界まで検証するが、各属性の意味は不透明なバイト列として保持する。補正レイヤーは `Database::correction_layer` から9種の型付きparameterと元payloadを返し、未知kindはpayloadを保持する。定規は `Database::ruler_layer` で所有関係・chain・curve点・guide長、2Dカメラは `Database::camera_2d_layer` でsnapshot構造を検証する。
 - 次の調査: ベクター本体の線・制御点・ブラシ属性と、テキストのフォント・段落・変形属性を差分比較する。3Dも1種類ずつ含む最小コーパスを作成する。定規はcurve header 4語と透視guide BLOBの意味を差分比較する。
 
 ## 1-bitラスターデータ
@@ -62,11 +62,12 @@
 
 ## アニメーションの未解釈部分
 
-- 状態: Track chain、primary action mixerの全FCurve、inline `TrackValueMap`、secondary mixerの実値を持つ倍精度FCurveまで対応
+- 状態: Track chain、primary/secondary FCurve、inline `TrackValueMap`、2Dカメラまで対応
 - 観測: 既存コーパス5件の291トラックからprimary 270曲線・12,347キーを復号した。`FirstTrack` / `TrackNextIndex` は全件を一度ずつ通る終端付きchainだった。`1000` はnon-cel folder 42/42、`2001` はstatic image 45/45、`2003` はpaper 5/5、`4000` は `PlayTime` 4/4、`4001` はaudio 4/4と対応した。`2001` の内訳はraster 42と `ResizableImageInfo` を持つresizable image 3で、全件の曲線とvalue entryが空だった。`2000` は複数の `ImageCelName` を持つ。補間、左右傾き、任意タグもキー数一致を確認した。`TrackValueMap` は全291行でrecord境界まで一致し、type 0の倍精度値とtype 2の文字列・整数値を確認した。`2000` の整数値は対応FCurve値と191/191で一致した。secondary `0110binc` の値recordは先頭fieldの `Int32[]` / `Name` / `End` metadata headerでschema記述と区別でき、後続headerはfield種別により残り2語が変化する。実値は37曲線・37キー（cel 32、audio 5）で、対応するprimaryと全フィールドが37/37で完全一致した。`4000` の4行は対象layerがtype 0のleafでtype 256のroot直下にあり、2Dカメラ用trackではないことも確認した。
-- 現在の扱い: chainを検証してnext ID、raw track kind、primaryの単精度曲線、secondaryの倍精度曲線、型付きvalue mapを公開する。`1000` / `2000` / `2001` / `2003` / `4000` / `4001` は確認済みhelperを持つ。未知value typeはpayloadを保持する。各 `Value` の単位は固定しない。従来の `CelTrack` は先頭のprimary `ImageCelName` を使う。
-- 次の調査: [手動2Dカメラ検証手順](manual-2d-camera-fixture.md)で最小差分を作り、secondary値recordの追加variantが得られた場合はmetadata headerと型対応を拡張する。
-- GUI検証補足: 2026-07-24に匿名文書で2Dカメラフォルダー作成コマンドまでは確認したが、GUI自動操作では階層メニューとショートカット入力のフォーカスを維持できず、作成前に中止した。文書・ショートカット設定は変更していないため、次回は手動でフォルダーを1つ作成した最小差分を使う。
+- 2Dカメラ: 匿名最小差分3件で `LayerType=512` と `TrackKind=2005` を確認した。value map type 3はdouble XYで、center・position・rotation・scale・opacityの5現在値を持つ。位置を `(15, 3)` 移動するとprimary/secondary双方へcenter X/Y、position X/Y、rotation、scaleの6曲線が現れ、snapshotのpositionと4隅も同量移動した。
+- 現在の扱い: chainを検証してnext ID、raw track kind、primaryの単精度曲線、secondaryの倍精度曲線、型付きvalue mapを公開する。`1000` / `2000` / `2001` / `2003` / `2005` / `4000` / `4001` は確認済みhelperを持つ。2Dカメラはlayer snapshot、type 3の2次元値、軸付きcurveを型付きで返す。未知value typeとsnapshot raw payloadは保持する。各 `Value` の単位とsnapshotの未命名11語は固定しない。従来の `CelTrack` は先頭のprimary `ImageCelName` を使う。
+- 次の調査: [2Dカメラ追加差分の手動手順](manual-2d-camera-extended-fixtures.md)でscale・rotation・opacityを1項目ずつ変え、snapshotの未命名11語を比較する。出力サイズと3D transformは別の匿名最小差分を作成する。
+- GUI検証補足: 2026-07-24に手動で匿名のbaseline・camera folder・position keyframe差分を作成し、解析を完了した。生成物と解析scriptは `tester/` のみに保持する。
 
 ## タイムラプス内部ストリーム
 

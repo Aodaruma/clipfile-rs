@@ -162,6 +162,12 @@ impl AnimationTrackKind {
         self.0 == 2003
     }
 
+    /// Whether this is the verified 2D-camera kind (`2005`).
+    #[must_use]
+    pub const fn is_camera_2d(self) -> bool {
+        self.0 == 2005
+    }
+
     /// Whether this is the verified play-time-control kind (`4000`).
     #[must_use]
     pub const fn is_play_time(self) -> bool {
@@ -235,6 +241,7 @@ impl AnimationCurveKeyframe {
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnimationCurve {
     kind: String,
+    axis: Option<String>,
     keyframes: Vec<AnimationCurveKeyframe>,
 }
 
@@ -243,6 +250,12 @@ impl AnimationCurve {
     #[must_use]
     pub fn kind(&self) -> &str {
         &self.kind
+    }
+
+    /// Optional component axis for vector parameters, such as `X` or `Y`.
+    #[must_use]
+    pub fn axis(&self) -> Option<&str> {
+        self.axis.as_deref()
     }
 
     /// Sorted validated keys.
@@ -315,6 +328,7 @@ impl SecondaryAnimationCurveKeyframe {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SecondaryAnimationCurve {
     kind: String,
+    axis: Option<String>,
     keyframes: Vec<SecondaryAnimationCurveKeyframe>,
 }
 
@@ -323,6 +337,12 @@ impl SecondaryAnimationCurve {
     #[must_use]
     pub fn kind(&self) -> &str {
         &self.kind
+    }
+
+    /// Optional component axis for vector parameters, such as `X` or `Y`.
+    #[must_use]
+    pub fn axis(&self) -> Option<&str> {
+        self.axis.as_deref()
     }
 
     /// Sorted validated double-precision keys.
@@ -345,6 +365,13 @@ pub enum AnimationTrackValue {
         /// Numeric value paired with the text in the corresponding curve.
         numeric_value: u32,
     },
+    /// Type `3`: two finite IEEE 754 double-precision components.
+    Vector2 {
+        /// Horizontal component.
+        x: f64,
+        /// Vertical component.
+        y: f64,
+    },
     /// A structurally valid value type that this crate does not yet interpret.
     Unknown {
         /// Raw type discriminator.
@@ -354,6 +381,202 @@ pub enum AnimationTrackValue {
         /// Remaining big-endian payload bytes.
         payload: Box<[u8]>,
     },
+}
+
+/// One finite two-dimensional point or vector used by 2D-camera metadata.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Camera2DPoint {
+    x: f64,
+    y: f64,
+}
+
+impl Camera2DPoint {
+    /// Horizontal component.
+    #[must_use]
+    pub const fn x(self) -> f64 {
+        self.x
+    }
+
+    /// Vertical component.
+    #[must_use]
+    pub const fn y(self) -> f64 {
+        self.y
+    }
+}
+
+/// Current/default values stored in a 2D-camera track's `TrackValueMap`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Camera2DTrackValues {
+    image_center: Camera2DPoint,
+    image_position: Camera2DPoint,
+    rotation: f64,
+    scale: f64,
+    opacity: f64,
+}
+
+impl Camera2DTrackValues {
+    /// Camera image center.
+    #[must_use]
+    pub const fn image_center(self) -> Camera2DPoint {
+        self.image_center
+    }
+
+    /// Camera image position.
+    #[must_use]
+    pub const fn image_position(self) -> Camera2DPoint {
+        self.image_position
+    }
+
+    /// Rotation in the value stored by CLIP STUDIO PAINT.
+    #[must_use]
+    pub const fn rotation(self) -> f64 {
+        self.rotation
+    }
+
+    /// Scale value stored by CLIP STUDIO PAINT.
+    #[must_use]
+    pub const fn scale(self) -> f64 {
+        self.scale
+    }
+
+    /// Opacity value stored by CLIP STUDIO PAINT.
+    #[must_use]
+    pub const fn opacity(self) -> f64 {
+        self.opacity
+    }
+}
+
+/// Current 2D-camera transform snapshot from `Camera2DResizableImageInfo`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Camera2DTransform {
+    header_size: u32,
+    point_record_size: u32,
+    width: u32,
+    height: u32,
+    scale: Camera2DPoint,
+    rotation: f64,
+    position: Camera2DPoint,
+    image_center: Camera2DPoint,
+    corners: Vec<Camera2DPoint>,
+    prefix_words: [u32; 5],
+    suffix_words: [u32; 6],
+    raw: Box<[u8]>,
+}
+
+impl Camera2DTransform {
+    /// Declared transform-header size.
+    #[must_use]
+    pub const fn header_size(&self) -> u32 {
+        self.header_size
+    }
+
+    /// Declared size of each transformed-corner record.
+    #[must_use]
+    pub const fn point_record_size(&self) -> u32 {
+        self.point_record_size
+    }
+
+    /// Width stored in the transform snapshot.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Height stored in the transform snapshot.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Horizontal and vertical scale factors.
+    #[must_use]
+    pub const fn scale(&self) -> Camera2DPoint {
+        self.scale
+    }
+
+    /// Rotation stored in the snapshot.
+    #[must_use]
+    pub const fn rotation(&self) -> f64 {
+        self.rotation
+    }
+
+    /// Current image position.
+    #[must_use]
+    pub const fn position(&self) -> Camera2DPoint {
+        self.position
+    }
+
+    /// Image center about which the transform is evaluated.
+    #[must_use]
+    pub const fn image_center(&self) -> Camera2DPoint {
+        self.image_center
+    }
+
+    /// Transformed frame corners in their stored order.
+    #[must_use]
+    pub fn corners(&self) -> &[Camera2DPoint] {
+        &self.corners
+    }
+
+    /// Five not-yet-named header words before the dimensions.
+    #[must_use]
+    pub const fn prefix_words(&self) -> [u32; 5] {
+        self.prefix_words
+    }
+
+    /// Six not-yet-named header words after the center.
+    #[must_use]
+    pub const fn suffix_words(&self) -> [u32; 6] {
+        self.suffix_words
+    }
+
+    /// Original transform payload for forward-compatible inspection.
+    #[must_use]
+    pub fn raw(&self) -> &[u8] {
+        &self.raw
+    }
+}
+
+/// Validated 2D-camera layer metadata.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Camera2DLayerData {
+    layer_id: i64,
+    canvas_id: i64,
+    keyframes_enabled: bool,
+    original_frame_center: Camera2DPoint,
+    transform: Camera2DTransform,
+}
+
+impl Camera2DLayerData {
+    /// Owning `Layer.MainId`.
+    #[must_use]
+    pub const fn layer_id(&self) -> i64 {
+        self.layer_id
+    }
+
+    /// Owning canvas.
+    #[must_use]
+    pub const fn canvas_id(&self) -> i64 {
+        self.canvas_id
+    }
+
+    /// Whether timeline keyframe editing is enabled for the layer.
+    #[must_use]
+    pub const fn keyframes_enabled(&self) -> bool {
+        self.keyframes_enabled
+    }
+
+    /// Original frame center stored in the layer row.
+    #[must_use]
+    pub const fn original_frame_center(&self) -> Camera2DPoint {
+        self.original_frame_center
+    }
+
+    /// Current transform snapshot stored in the layer row.
+    #[must_use]
+    pub const fn transform(&self) -> &Camera2DTransform {
+        &self.transform
+    }
 }
 
 /// One named entry decoded from a track's inline `TrackValueMap`.
@@ -390,6 +613,7 @@ pub struct AnimationTrack {
     values: Vec<AnimationTrackValueEntry>,
     curves: Vec<AnimationCurve>,
     secondary_curves: Vec<SecondaryAnimationCurve>,
+    camera_2d_values: Option<Camera2DTrackValues>,
 }
 
 impl AnimationTrack {
@@ -454,6 +678,12 @@ impl AnimationTrack {
     #[must_use]
     pub fn secondary_curves(&self) -> &[SecondaryAnimationCurve] {
         &self.secondary_curves
+    }
+
+    /// Typed current/default values for a verified 2D-camera track.
+    #[must_use]
+    pub const fn camera_2d_values(&self) -> Option<Camera2DTrackValues> {
+        self.camera_2d_values
     }
 }
 
@@ -528,6 +758,14 @@ impl Animation {
     #[must_use]
     pub fn animation_tracks(&self) -> &[AnimationTrack] {
         &self.animation_tracks
+    }
+
+    /// Finds the verified 2D-camera track for a layer.
+    #[must_use]
+    pub fn camera_track_for_layer(&self, layer_id: i64) -> Option<&AnimationTrack> {
+        self.animation_tracks
+            .iter()
+            .find(|track| track.layer_id == Some(layer_id) && track.kind.is_camera_2d())
     }
 }
 
@@ -615,6 +853,113 @@ impl Database {
             });
         }
         Ok(timelines)
+    }
+
+    /// Reads and validates 2D-camera metadata for one layer.
+    ///
+    /// `None` means the layer is absent, is not a 2D-camera layer, or the
+    /// current schema predates the camera-specific columns.
+    pub fn camera_2d_layer(
+        &self,
+        layer_id: i64,
+        limits: Limits,
+    ) -> Result<Option<Camera2DLayerData>> {
+        let required = [
+            "MainId",
+            "CanvasId",
+            "LayerType",
+            "LayerFolder",
+            "TimeLineLayerKeyFrameEnabled",
+            "Camera2DResizableImageInfo",
+            "Camera2DOriginalFrameCenterX",
+            "Camera2DOriginalFrameCenterY",
+        ];
+        if required
+            .iter()
+            .any(|column| !self.schema().has_column("Layer", column))
+        {
+            return Ok(None);
+        }
+        let raw = self
+            .connection()
+            .query_row(
+                "SELECT MainId, CanvasId, LayerType, LayerFolder, \
+                 TimeLineLayerKeyFrameEnabled, Camera2DResizableImageInfo, \
+                 Camera2DOriginalFrameCenterX, Camera2DOriginalFrameCenterY \
+                 FROM Layer WHERE MainId = ?1 LIMIT 1",
+                params![layer_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        optional_bytes(row.get_ref(5)?, 5, "Camera2DResizableImageInfo")?
+                            .map(<[u8]>::to_vec),
+                        row.get::<_, Option<f64>>(6)?,
+                        row.get::<_, Option<f64>>(7)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((
+            layer_id,
+            canvas_id,
+            layer_type,
+            folder_flags,
+            keyframes_enabled,
+            payload,
+            original_x,
+            original_y,
+        )) = raw
+        else {
+            return Ok(None);
+        };
+        if layer_type & 512 == 0 {
+            if payload.is_some() {
+                return Err(animation_error(format!(
+                    "layer {layer_id} has 2D-camera data without the camera layer bit"
+                )));
+            }
+            return Ok(None);
+        }
+        if folder_flags == 0 {
+            return Err(animation_error(format!(
+                "2D-camera layer {layer_id} is not a folder"
+            )));
+        }
+        if keyframes_enabled == 0 {
+            return Err(animation_error(format!(
+                "2D-camera layer {layer_id} does not have timeline keyframes enabled"
+            )));
+        }
+        let payload = payload.ok_or_else(|| {
+            animation_error(format!(
+                "2D-camera layer {layer_id} has no transform snapshot"
+            ))
+        })?;
+        enforce_byte_limit(
+            payload.len() as u64,
+            limits.max_animation_bytes(),
+            "2D-camera transform snapshot",
+        )?;
+        let original_frame_center = Camera2DPoint {
+            x: original_x.ok_or_else(|| animation_error("2D-camera original center X is NULL"))?,
+            y: original_y.ok_or_else(|| animation_error("2D-camera original center Y is NULL"))?,
+        };
+        if !original_frame_center.x.is_finite() || !original_frame_center.y.is_finite() {
+            return Err(animation_error(
+                "2D-camera original frame center is not finite",
+            ));
+        }
+        Ok(Some(Camera2DLayerData {
+            layer_id,
+            canvas_id,
+            keyframes_enabled: true,
+            original_frame_center,
+            transform: parse_camera_2d_transform(&payload, limits)?,
+        }))
     }
 }
 
@@ -763,6 +1108,20 @@ impl<R: Read + Seek> ClipFile<R> {
                 Vec::new()
             };
             let kind = AnimationTrackKind::new(source.kind);
+            let camera_2d_values = if kind.is_camera_2d() {
+                let camera_layer_id = layer_id.ok_or_else(|| {
+                    animation_error(format!("2D-camera track {} has no layer UUID", source.id))
+                })?;
+                if database.camera_2d_layer(camera_layer_id, limits)?.is_none() {
+                    return Err(animation_error(format!(
+                        "2D-camera track {} does not resolve to camera-layer metadata",
+                        source.id
+                    )));
+                }
+                Some(parse_camera_2d_track_values(&values)?)
+            } else {
+                None
+            };
             if kind.is_image_cel() {
                 let layer_id = layer_id.ok_or_else(|| {
                     animation_error(format!("cel track {} has no layer UUID", source.id))
@@ -809,6 +1168,7 @@ impl<R: Read + Seek> ClipFile<R> {
                 values,
                 curves,
                 secondary_curves,
+                camera_2d_values,
             });
         }
         tracks.sort_by_key(CelTrack::layer_id);
@@ -1089,6 +1449,50 @@ fn parse_image_cel_curve(bytes: &[u8], limits: Limits) -> Result<Option<Vec<CelK
         .map(Some)
 }
 
+fn parse_camera_2d_track_values(
+    values: &[AnimationTrackValueEntry],
+) -> Result<Camera2DTrackValues> {
+    let vector = |name| -> Result<Camera2DPoint> {
+        let value = unique_track_value(values, name)?;
+        let AnimationTrackValue::Vector2 { x, y } = value else {
+            return Err(animation_error(format!(
+                "2D-camera value {name:?} is not a two-dimensional value"
+            )));
+        };
+        Ok(Camera2DPoint { x: *x, y: *y })
+    };
+    let scalar = |name| -> Result<f64> {
+        let value = unique_track_value(values, name)?;
+        let AnimationTrackValue::Float(value) = value else {
+            return Err(animation_error(format!(
+                "2D-camera value {name:?} is not scalar"
+            )));
+        };
+        Ok(*value)
+    };
+    Ok(Camera2DTrackValues {
+        image_center: vector("ImageCenter")?,
+        image_position: vector("ImagePosition")?,
+        rotation: scalar("ImageRotation")?,
+        scale: scalar("ImageScale")?,
+        opacity: scalar("Opacity")?,
+    })
+}
+
+fn unique_track_value<'a>(
+    values: &'a [AnimationTrackValueEntry],
+    name: &str,
+) -> Result<&'a AnimationTrackValue> {
+    let mut matches = values.iter().filter(|entry| entry.name == name);
+    let value = matches
+        .next()
+        .ok_or_else(|| animation_error(format!("2D-camera track lacks {name:?}")))?;
+    if matches.next().is_some() {
+        return Err(animation_error(format!("2D-camera track repeats {name:?}")));
+    }
+    Ok(&value.value)
+}
+
 fn parse_track_value_map(bytes: &[u8], limits: Limits) -> Result<Vec<AnimationTrackValueEntry>> {
     enforce_byte_limit(
         bytes.len() as u64,
@@ -1147,6 +1551,16 @@ fn parse_track_value_map(bytes: &[u8], limits: Limits) -> Result<Vec<AnimationTr
                 text,
                 numeric_value: u32::from_be_bytes([*a, *b, *c, *d]),
             },
+            (3, payload) if text.is_empty() && payload.len() == 16 => {
+                let x = f64::from_be_bytes(payload[..8].try_into().expect("eight bytes"));
+                let y = f64::from_be_bytes(payload[8..].try_into().expect("eight bytes"));
+                if !x.is_finite() || !y.is_finite() {
+                    return Err(animation_error(
+                        "TrackValueMap contains a non-finite two-dimensional value",
+                    ));
+                }
+                AnimationTrackValue::Vector2 { x, y }
+            }
             _ => AnimationTrackValue::Unknown {
                 kind,
                 text,
@@ -1162,6 +1576,119 @@ fn parse_track_value_map(bytes: &[u8], limits: Limits) -> Result<Vec<AnimationTr
         ));
     }
     Ok(entries)
+}
+
+fn parse_camera_2d_transform(bytes: &[u8], limits: Limits) -> Result<Camera2DTransform> {
+    enforce_byte_limit(
+        bytes.len() as u64,
+        limits.max_animation_bytes(),
+        "2D-camera transform snapshot",
+    )?;
+    let mut cursor = 0;
+    let header_size_raw = read_be_u32(bytes, &mut cursor)?;
+    let point_record_size_raw = read_be_u32(bytes, &mut cursor)?;
+    let header_size = header_size_raw as usize;
+    let point_record_size = point_record_size_raw as usize;
+    let point_count = read_be_u32(bytes, &mut cursor)?;
+    enforce_item_limit(
+        u64::from(point_count),
+        limits.max_animation_items(),
+        "2D-camera transform points",
+    )?;
+    if header_size < 120 {
+        return Err(animation_error(format!(
+            "2D-camera transform header size {header_size} is below 120"
+        )));
+    }
+    if point_record_size < 16 {
+        return Err(animation_error(format!(
+            "2D-camera point record size {point_record_size} is below 16"
+        )));
+    }
+    let expected_size = (point_count as usize)
+        .checked_mul(point_record_size)
+        .and_then(|size| header_size.checked_add(size))
+        .ok_or(Error::OffsetOverflow)?;
+    if bytes.len() != expected_size {
+        return Err(animation_error(format!(
+            "2D-camera transform has {} bytes instead of {expected_size}",
+            bytes.len()
+        )));
+    }
+    let mut prefix_words = [0_u32; 5];
+    for value in &mut prefix_words {
+        *value = read_be_u32(bytes, &mut cursor)?;
+    }
+    let width = read_be_u32(bytes, &mut cursor)?;
+    let height = read_be_u32(bytes, &mut cursor)?;
+    if width == 0
+        || height == 0
+        || width > limits.max_canvas_dimension()
+        || height > limits.max_canvas_dimension()
+    {
+        return Err(animation_error(format!(
+            "2D-camera transform dimensions {width}x{height} are invalid"
+        )));
+    }
+    let scale = read_camera_point(bytes, &mut cursor, "scale")?;
+    let rotation = read_be_f64(bytes, &mut cursor)?;
+    let position = read_camera_point(bytes, &mut cursor, "position")?;
+    let image_center = read_camera_point(bytes, &mut cursor, "image center")?;
+    if !rotation.is_finite() {
+        return Err(animation_error(
+            "2D-camera transform rotation is not finite",
+        ));
+    }
+    let mut suffix_words = [0_u32; 6];
+    for value in &mut suffix_words {
+        *value = read_be_u32(bytes, &mut cursor)?;
+    }
+    if cursor > header_size {
+        return Err(animation_error(
+            "2D-camera known header fields exceed its declared header",
+        ));
+    }
+    cursor = header_size;
+    let mut corners = Vec::new();
+    corners
+        .try_reserve_exact(point_count as usize)
+        .map_err(|_| Error::LimitExceeded {
+            resource: "2D-camera point allocation",
+            value: u64::from(point_count),
+            limit: limits.max_animation_items(),
+        })?;
+    for _ in 0..point_count {
+        let record_end = cursor
+            .checked_add(point_record_size)
+            .ok_or(Error::OffsetOverflow)?;
+        corners.push(read_camera_point(bytes, &mut cursor, "frame corner")?);
+        cursor = record_end;
+    }
+    Ok(Camera2DTransform {
+        header_size: header_size_raw,
+        point_record_size: point_record_size_raw,
+        width,
+        height,
+        scale,
+        rotation,
+        position,
+        image_center,
+        corners,
+        prefix_words,
+        suffix_words,
+        raw: bytes.into(),
+    })
+}
+
+fn read_camera_point(bytes: &[u8], cursor: &mut usize, name: &str) -> Result<Camera2DPoint> {
+    let point = Camera2DPoint {
+        x: read_be_f64(bytes, cursor)?,
+        y: read_be_f64(bytes, cursor)?,
+    };
+    if !point.x.is_finite() || !point.y.is_finite() {
+        return Err(animation_error(format!("2D-camera {name} is not finite")));
+    }
+    Ok(point)
 }
 
 fn read_utf16be_value(bytes: &[u8], cursor: &mut usize, limit: usize) -> Result<String> {
@@ -1201,32 +1728,85 @@ fn read_be_u32(bytes: &[u8], cursor: &mut usize) -> Result<u32> {
     Ok(u32::from_be_bytes(value.try_into().expect("four bytes")))
 }
 
+fn read_be_f64(bytes: &[u8], cursor: &mut usize) -> Result<f64> {
+    let end = cursor.checked_add(8).ok_or(Error::OffsetOverflow)?;
+    let value = bytes
+        .get(*cursor..end)
+        .ok_or_else(|| animation_error("truncated big-endian animation float"))?;
+    *cursor = end;
+    Ok(f64::from_be_bytes(value.try_into().expect("eight bytes")))
+}
+
+struct AnimationCurveHeader {
+    cursor: usize,
+    kind: String,
+    axis: Option<String>,
+}
+
+fn animation_curve_header(
+    bytes: &[u8],
+    start: usize,
+    strings: &[String],
+    fcurve: u32,
+) -> Option<AnimationCurveHeader> {
+    let mut cursor = start;
+    if read_u32_optional(bytes, &mut cursor)? != fcurve
+        || read_u32_optional(bytes, &mut cursor)? != 0
+    {
+        return None;
+    }
+    let property_count = read_u32_optional(bytes, &mut cursor)?;
+    if !(1..=8).contains(&property_count) {
+        return None;
+    }
+    let mut kind = None;
+    let mut axis = None;
+    for _ in 0..property_count {
+        let property = strings.get(read_u32_optional(bytes, &mut cursor)? as usize)?;
+        let value = strings.get(read_u32_optional(bytes, &mut cursor)? as usize)?;
+        match property.as_str() {
+            "Type" if kind.is_none() => kind = Some(value.clone()),
+            "Axis" if axis.is_none() => axis = Some(value.clone()),
+            "Type" | "Axis" => return None,
+            _ => {}
+        }
+    }
+    Some(AnimationCurveHeader {
+        cursor,
+        kind: kind?,
+        axis,
+    })
+}
+
+fn read_u32_optional(bytes: &[u8], cursor: &mut usize) -> Option<u32> {
+    let end = cursor.checked_add(4)?;
+    let value = bytes.get(*cursor..end)?;
+    *cursor = end;
+    Some(u32::from_le_bytes(value.try_into().ok()?))
+}
+
 fn parse_animation_curves(bytes: &[u8], limits: Limits) -> Result<Vec<AnimationCurve>> {
-    let strings = parse_string_table(bytes, limits)?;
+    let (strings, data_start) = parse_string_table_with_data_start(bytes, limits)?;
     let Some(fcurve) = string_id_optional(&strings, "FCurve") else {
         return Ok(Vec::new());
     };
-    let curve_type = string_id(&strings, "Type")?;
-    let pattern = [fcurve, 0, 1, curve_type];
-    let byte_len = pattern.len() * 4;
     let mut curves = Vec::new();
-    for start in 0..=bytes.len().saturating_sub(byte_len + 8) {
-        if !u32_pattern_matches(bytes, start, &pattern) {
+    for start in data_start..=bytes.len().saturating_sub(12) {
+        let Some(header) = animation_curve_header(bytes, start, &strings, fcurve) else {
             continue;
-        }
+        };
         enforce_item_limit(
             curves.len() as u64 + 1,
             limits.max_animation_items(),
             "animation mixer curves",
         )?;
-        let mut cursor = start + byte_len;
-        let kind_id = read_u32(bytes, &mut cursor)?;
-        let kind = string_at(&strings, kind_id)?.to_owned();
+        let mut cursor = header.cursor;
         curves.push(parse_animation_curve_fields(
             bytes,
             &strings,
             &mut cursor,
-            kind,
+            header.kind,
+            header.axis,
             limits,
         )?);
     }
@@ -1241,7 +1821,6 @@ fn parse_secondary_animation_curves(
     let Some(fcurve) = string_id_optional(&strings, "FCurve") else {
         return Ok(Vec::new());
     };
-    let curve_type = string_id(&strings, "Type")?;
     let (Some(int32_array), Some(name), Some(end)) = (
         string_id_optional(&strings, "Int32[]"),
         string_id_optional(&strings, "Name"),
@@ -1250,20 +1829,13 @@ fn parse_secondary_animation_curves(
         return Ok(Vec::new());
     };
     let field_prefix = [int32_array, name, end];
-    let pattern = [fcurve, 0, 1, curve_type];
-    let minimum_size = (pattern.len() + 2 + field_prefix.len())
-        .checked_mul(4)
-        .ok_or(Error::OffsetOverflow)?;
+    let minimum_size = 12;
     let mut curves = Vec::new();
     for start in data_start..=bytes.len().saturating_sub(minimum_size) {
-        if !u32_pattern_matches(bytes, start, &pattern) {
-            continue;
-        }
-        let mut cursor = start + pattern.len() * 4;
-        let kind_id = read_u32(bytes, &mut cursor)?;
-        let Some(kind) = strings.get(kind_id as usize) else {
+        let Some(header) = animation_curve_header(bytes, start, &strings, fcurve) else {
             continue;
         };
+        let mut cursor = header.cursor;
         let field_count = read_u32(bytes, &mut cursor)?;
         if !u32_pattern_matches(bytes, cursor, &field_prefix) {
             continue;
@@ -1282,9 +1854,9 @@ fn parse_secondary_animation_curves(
             bytes,
             &strings,
             &mut cursor,
-            kind.clone(),
+            header.kind,
+            header.axis,
             field_count,
-            int32_array,
             limits,
         )?);
     }
@@ -1296,10 +1868,12 @@ fn parse_secondary_animation_curve_fields(
     strings: &[String],
     cursor: &mut usize,
     kind: String,
+    axis: Option<String>,
     field_count: u32,
-    int32_array: u32,
     limits: Limits,
 ) -> Result<SecondaryAnimationCurve> {
+    let int32_array = string_id_optional(strings, "Int32[]")
+        .ok_or_else(|| animation_error("secondary animation mixer lacks \"Int32[]\""))?;
     let mut frames = None;
     let mut values = None;
     let mut tags = None;
@@ -1466,7 +2040,11 @@ fn parse_secondary_animation_curve_fields(
             revise_constant: revise_constant.as_ref().map(|array| array[index]),
         });
     }
-    Ok(SecondaryAnimationCurve { kind, keyframes })
+    Ok(SecondaryAnimationCurve {
+        kind,
+        axis,
+        keyframes,
+    })
 }
 
 fn secondary_field_header_matches(
@@ -1500,6 +2078,7 @@ fn parse_animation_curve_fields(
     strings: &[String],
     cursor: &mut usize,
     kind: String,
+    axis: Option<String>,
     limits: Limits,
 ) -> Result<AnimationCurve> {
     let field_count = read_u32(bytes, cursor)?;
@@ -1633,7 +2212,11 @@ fn parse_animation_curve_fields(
             revise_constant: revise_constant.as_ref().map(|array| array[index]),
         });
     }
-    Ok(AnimationCurve { kind, keyframes })
+    Ok(AnimationCurve {
+        kind,
+        axis,
+        keyframes,
+    })
 }
 
 fn require_curve_array_length(
@@ -1660,10 +2243,6 @@ fn require_optional_curve_array_length<T>(
         require_curve_array_length(curve, field, values.len(), expected)?;
     }
     Ok(())
-}
-
-fn parse_string_table(bytes: &[u8], limits: Limits) -> Result<Vec<String>> {
-    Ok(parse_string_table_with_data_start(bytes, limits)?.0)
 }
 
 fn parse_string_table_with_data_start(
@@ -1717,11 +2296,6 @@ fn u32_pattern_matches(bytes: &[u8], start: usize, pattern: &[u32]) -> bool {
             .map(u32::from_le_bytes)
             == Some(*expected)
     })
-}
-
-fn string_id(strings: &[String], wanted: &str) -> Result<u32> {
-    string_id_optional(strings, wanted)
-        .ok_or_else(|| animation_error(format!("animation mixer lacks {wanted:?}")))
 }
 
 fn string_id_optional(strings: &[String], wanted: &str) -> Option<u32> {
@@ -1893,6 +2467,118 @@ mod tests {
         push_be_u32(&mut bytes, 8);
         push_be_u32(&mut bytes, 1);
         push_value_record(&mut bytes, "ImageCelName", "A", 2, &0_u32.to_be_bytes());
+        bytes
+    }
+
+    fn axis_binc() -> Vec<u8> {
+        let strings = [
+            "FCurve",
+            "Type",
+            "ImagePosition",
+            "Axis",
+            "X",
+            "Frame",
+            "Single[]",
+            "Value",
+            "ReviseConstant",
+            "Byte[]",
+        ];
+        let mut bytes = Vec::from(b"cmt 0100binc".as_slice());
+        bytes.extend_from_slice(&[0; 4]);
+        push_u32(&mut bytes, strings.len() as u32);
+        for value in strings {
+            bytes.push(value.len() as u8);
+            bytes.extend_from_slice(value.as_bytes());
+        }
+        for value in [0, 0, 2, 1, 2, 3, 4, 3] {
+            push_u32(&mut bytes, value);
+        }
+        for (field, value) in [(5, 94.0_f32), (7, 447.0)] {
+            push_u32(&mut bytes, field);
+            push_u32(&mut bytes, 6);
+            push_u32(&mut bytes, 1);
+            push_u32(&mut bytes, value.to_bits());
+            push_u32(&mut bytes, 0);
+            push_u32(&mut bytes, 0);
+        }
+        push_u32(&mut bytes, 8);
+        push_u32(&mut bytes, 9);
+        push_u32(&mut bytes, 1);
+        bytes.push(1);
+        push_u32(&mut bytes, 0);
+        push_u32(&mut bytes, 0);
+        bytes
+    }
+
+    fn secondary_axis_binc() -> Vec<u8> {
+        let strings = [
+            "FCurve",
+            "Type",
+            "ImagePosition",
+            "Axis",
+            "X",
+            "Int32[]",
+            "Name",
+            "End",
+            "Frame",
+            "Double[]",
+            "Value",
+            "ReviseConstant",
+            "Byte[]",
+        ];
+        let mut bytes = Vec::from(b"cmt 0110binc".as_slice());
+        bytes.extend_from_slice(&[0; 4]);
+        push_u32(&mut bytes, strings.len() as u32);
+        for value in strings {
+            bytes.push(value.len() as u8);
+            bytes.extend_from_slice(value.as_bytes());
+        }
+        for value in [0, 0, 2, 1, 2, 3, 4, 3] {
+            push_u32(&mut bytes, value);
+        }
+        for (field, value) in [(8, 94.0_f64), (10, 447.0)] {
+            for prefix in [5, 6, 7] {
+                push_u32(&mut bytes, prefix);
+            }
+            push_u32(&mut bytes, field);
+            push_u32(&mut bytes, 9);
+            push_u32(&mut bytes, 1);
+            bytes.extend_from_slice(&value.to_le_bytes());
+            push_u32(&mut bytes, 0);
+            push_u32(&mut bytes, 0);
+        }
+        for prefix in [5, 6, 7] {
+            push_u32(&mut bytes, prefix);
+        }
+        push_u32(&mut bytes, 11);
+        push_u32(&mut bytes, 12);
+        push_u32(&mut bytes, 1);
+        bytes.push(1);
+        push_u32(&mut bytes, 0);
+        push_u32(&mut bytes, 0);
+        bytes
+    }
+
+    fn camera_transform() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for value in [120_u32, 16, 4, 0, 0, 0, 2, 2, 720, 540] {
+            push_be_u32(&mut bytes, value);
+        }
+        for value in [1.0_f64, 1.0, 0.0, 447.0, 327.0, 360.0, 270.0] {
+            bytes.extend_from_slice(&value.to_be_bytes());
+        }
+        for value in [3_u32, 1, 0, 1, 0, 0] {
+            push_be_u32(&mut bytes, value);
+        }
+        for (x, y) in [
+            (87.0_f64, 57.0_f64),
+            (807.0, 57.0),
+            (87.0, 597.0),
+            (807.0, 597.0),
+        ] {
+            bytes.extend_from_slice(&x.to_be_bytes());
+            bytes.extend_from_slice(&y.to_be_bytes());
+        }
         bytes
     }
 
@@ -2239,10 +2925,76 @@ mod tests {
     }
 
     #[test]
+    fn parses_axis_qualified_camera_curves() {
+        let primary = parse_animation_curves(&axis_binc(), Limits::default()).unwrap();
+        assert_eq!(primary.len(), 1);
+        assert_eq!(primary[0].kind(), "ImagePosition");
+        assert_eq!(primary[0].axis(), Some("X"));
+        assert_eq!(primary[0].keyframes()[0].time_60hz(), 94.0);
+        assert_eq!(primary[0].keyframes()[0].value(), 447.0);
+
+        let secondary =
+            parse_secondary_animation_curves(&secondary_axis_binc(), Limits::default()).unwrap();
+        assert_eq!(secondary.len(), 1);
+        assert_eq!(secondary[0].kind(), "ImagePosition");
+        assert_eq!(secondary[0].axis(), Some("X"));
+        assert_eq!(secondary[0].keyframes()[0].time_60hz(), 94.0);
+        assert_eq!(secondary[0].keyframes()[0].value(), 447.0);
+    }
+
+    #[test]
+    fn reads_and_validates_camera_layer_snapshot() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE Layer (
+                    MainId INTEGER, CanvasId INTEGER, LayerType INTEGER,
+                    LayerFolder INTEGER, TimeLineLayerKeyFrameEnabled INTEGER,
+                    Camera2DResizableImageInfo BLOB,
+                    Camera2DOriginalFrameCenterX REAL,
+                    Camera2DOriginalFrameCenterY REAL
+                 );",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO Layer VALUES (7, 1, 512, 1, 1, ?1, 432, 324)",
+                params![camera_transform()],
+            )
+            .unwrap();
+        let database = Database::from_connection(connection).unwrap();
+        let camera = database
+            .camera_2d_layer(7, Limits::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(camera.layer_id(), 7);
+        assert_eq!(camera.canvas_id(), 1);
+        assert!(camera.keyframes_enabled());
+        assert_eq!(
+            camera.original_frame_center(),
+            Camera2DPoint { x: 432.0, y: 324.0 }
+        );
+        assert_eq!(camera.transform().width(), 720);
+        assert_eq!(camera.transform().height(), 540);
+        assert_eq!(camera.transform().header_size(), 120);
+        assert_eq!(camera.transform().point_record_size(), 16);
+        assert_eq!(
+            camera.transform().position(),
+            Camera2DPoint { x: 447.0, y: 327.0 }
+        );
+        assert_eq!(camera.transform().corners().len(), 4);
+        assert_eq!(camera.transform().raw(), camera_transform());
+        assert!(matches!(
+            database.camera_2d_layer(7, Limits::default().with_max_animation_items(3)),
+            Err(Error::LimitExceeded { .. })
+        ));
+    }
+
+    #[test]
     fn parses_typed_and_unknown_track_values() {
         let mut bytes = Vec::new();
         push_be_u32(&mut bytes, 8);
-        push_be_u32(&mut bytes, 3);
+        push_be_u32(&mut bytes, 4);
         push_value_record(
             &mut bytes,
             "PlayTime",
@@ -2251,10 +3003,14 @@ mod tests {
             &2.5_f64.to_bits().to_be_bytes(),
         );
         push_value_record(&mut bytes, "ImageCelName", "A", 2, &7_u32.to_be_bytes());
+        let mut vector = Vec::new();
+        vector.extend_from_slice(&447.0_f64.to_be_bytes());
+        vector.extend_from_slice(&327.0_f64.to_be_bytes());
+        push_value_record(&mut bytes, "ImagePosition", "", 3, &vector);
         push_value_record(&mut bytes, "FutureValue", "opaque", 99, &[1, 2, 3]);
 
         let entries = parse_track_value_map(&bytes, Limits::default()).unwrap();
-        assert_eq!(entries.len(), 3);
+        assert_eq!(entries.len(), 4);
         assert_eq!(entries[0].value(), &AnimationTrackValue::Float(2.5));
         assert_eq!(
             entries[1].value(),
@@ -2265,12 +3021,43 @@ mod tests {
         );
         assert_eq!(
             entries[2].value(),
+            &AnimationTrackValue::Vector2 { x: 447.0, y: 327.0 }
+        );
+        assert_eq!(
+            entries[3].value(),
             &AnimationTrackValue::Unknown {
                 kind: 99,
                 text: "opaque".to_owned(),
                 payload: Box::from([1, 2, 3]),
             }
         );
+    }
+
+    #[test]
+    fn validates_typed_camera_track_values() {
+        let entry = |name: &str, value: AnimationTrackValue| AnimationTrackValueEntry {
+            name: name.to_owned(),
+            value,
+        };
+        let values = [
+            entry(
+                "ImageCenter",
+                AnimationTrackValue::Vector2 { x: 360.0, y: 270.0 },
+            ),
+            entry(
+                "ImagePosition",
+                AnimationTrackValue::Vector2 { x: 447.0, y: 327.0 },
+            ),
+            entry("ImageRotation", AnimationTrackValue::Float(0.0)),
+            entry("ImageScale", AnimationTrackValue::Float(100.0)),
+            entry("Opacity", AnimationTrackValue::Float(100.0)),
+        ];
+        let camera = parse_camera_2d_track_values(&values).unwrap();
+        assert_eq!(
+            camera.image_position(),
+            Camera2DPoint { x: 447.0, y: 327.0 }
+        );
+        assert_eq!(camera.scale(), 100.0);
     }
 
     #[test]
@@ -2327,6 +3114,7 @@ mod tests {
         assert!(AnimationTrackKind::new(2000).is_image_cel());
         assert!(AnimationTrackKind::new(2001).is_static_image());
         assert!(AnimationTrackKind::new(2003).is_paper());
+        assert!(AnimationTrackKind::new(2005).is_camera_2d());
         assert!(AnimationTrackKind::new(4000).is_play_time());
         assert!(AnimationTrackKind::new(4001).is_audio());
         assert!(!AnimationTrackKind::new(9999).is_static_image());

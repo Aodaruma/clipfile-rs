@@ -12,6 +12,7 @@
 - `TextLayerData` / `TextObjectData`: UTF-8本文、所有レイヤー、形式値、オブジェクト別の不透明な属性
 - `CorrectionLayerData` / `Correction`: 補正レイヤーの形式値、9種の型付きparameter、元の属性payload
 - `Animation` / `Timeline` / `AnimationTrack` / `AnimationCurve` / `AnimationTrackValueEntry` / `CelTrack`: 再生範囲、fps、raw track kind、レイヤー対応、汎用FCurve、現在値、セル選択キー
+- `Camera2DLayerData` / `Camera2DTransform` / `Camera2DTrackValues`: 2Dカメラfolder、現在transform snapshot、軸付きcurveとtrack既定値
 - `TimeLapse` / `TimeLapseManager` / `TimeLapseRecord` / `TimeLapseBlob` / `TimeLapseFrame`: canvasごとの記録、連続BLOB、内部WebP frame索引
 - `CmcFile` / `CmcNode`: standalone `.cmc` のProject metadata、検証済みページtree、raw・安全解決済みページ参照
 - `Layer`: 名前、種類、合成、可視性、不透明度、ロック、クリッピング、マスク、兄弟・子・Mipmap参照
@@ -44,11 +45,13 @@
 
 `Database::correction_layer(layer_id, limits)` は、`Layer.FilterLayerInfo` のbig-endian kind・section長を検証する。確認済みkind 1～9を、明るさ・コントラスト、レベル補正、トーンカーブ、色相・彩度・明度、カラーバランス、階調反転、ポスタリゼーション、二値化、グラデーションマップとして返す。レベル値・曲線座標・色・不透明度のraw固定小数点word、元payload、未知kindのpayloadを保持し、1 payloadのバイト数とchannel・stop・point数を `Limits` で制限する。
 
-`animation` featureの `Database::timelines(limits)` は、fpsと再生範囲を検証して全タイムラインを返す。`ClipFile::read_animation(database, limits)` は有効な `AnimationCutBank.FirstTimeLine` を優先し、同じbankの全トラックを読む。`FirstTrack` から `TrackNextIndex` をたどり、循環・欠落・到達不能・重複IDがないことも検証する。primary `TrackActionMixer` はSQLiteの外部ID索引から直接解決し、little-endian長付きzlibを上限付きで展開する。BINC文字列表から全 `FCurve` を列挙し、配列境界、有限・昇順の60 Hzキー時刻、`Frame` / `Value` と任意の `Tag` / `Interp` / slope / `ReviseConstant` の同数性を検証する。`AnimationTrackKind` はraw値を保持し、確認済みの `1000`（non-cel folder）、`2000`（image cel）、`2001`（static image）、`2003`（paper）、`4000`（play time）、`4001`（audio）に判定ヘルパーを持つ。トラックとレイヤーは16-byte UUIDで照合する。
+`animation` featureの `Database::timelines(limits)` は、fpsと再生範囲を検証して全タイムラインを返す。`ClipFile::read_animation(database, limits)` は有効な `AnimationCutBank.FirstTimeLine` を優先し、同じbankの全トラックを読む。`FirstTrack` から `TrackNextIndex` をたどり、循環・欠落・到達不能・重複IDがないことも検証する。primary `TrackActionMixer` はSQLiteの外部ID索引から直接解決し、little-endian長付きzlibを上限付きで展開する。BINC文字列表から全 `FCurve` を列挙し、配列境界、有限・昇順の60 Hzキー時刻、`Frame` / `Value` と任意の `Tag` / `Interp` / slope / `ReviseConstant` の同数性を検証する。vector parameterの `Axis=X/Y` は `AnimationCurve::axis` で保持する。`AnimationTrackKind` はraw値を保持し、確認済みの `1000`（non-cel folder）、`2000`（image cel）、`2001`（static image）、`2003`（paper）、`2005`（2D camera）、`4000`（play time）、`4001`（audio）に判定ヘルパーを持つ。トラックとレイヤーは16-byte UUIDで照合する。
 
-既存互換の `CelTrack` は `TrackKind=2000` の先頭 `ImageCelName` 曲線を使う。複数曲線、`PlayTime`、`AudioPlayer` を含むprimary mixerの全曲線は `Animation::animation_tracks()` から取得する。各 `AnimationTrack` はinline `TrackValueMap` の有無と全entryも返す。mapはbig-endianのヘッダ・record長とUTF-16BE文字列の境界を検証し、確認済みのtype 0を `Float(f64)`、type 2を `IndexedText` として返す。将来typeは判別値・文字列・payloadを `Unknown` に損失なく保持する。secondary `0110binc` はschema側の見かけ上の `FCurve` と、先頭fieldに `Int32[]` / `Name` / `End` metadata headerを持つ値recordを区別する。後者の `Double[]` 時刻・値・傾きは `SecondaryAnimationCurve` から `f64` のまま取得できる。secondary値recordは疎であるため、secondary mixer外部IDが存在しても曲線配列は空になり得る。
+既存互換の `CelTrack` は `TrackKind=2000` の先頭 `ImageCelName` 曲線を使う。複数曲線、`PlayTime`、`AudioPlayer` を含むprimary mixerの全曲線は `Animation::animation_tracks()` から取得する。各 `AnimationTrack` はinline `TrackValueMap` の有無と全entryも返す。mapはbig-endianのヘッダ・record長とUTF-16BE文字列の境界を検証し、確認済みのtype 0を `Float(f64)`、type 2を `IndexedText`、type 3を `Vector2` として返す。将来typeは判別値・文字列・payloadを `Unknown` に損失なく保持する。secondary `0110binc` はschema側の見かけ上の `FCurve` と、先頭fieldに `Int32[]` / `Name` / `End` metadata headerを持つ値recordを区別する。後者の `Double[]` 時刻・値・傾きは `SecondaryAnimationCurve` から `f64` のまま取得できる。secondary値recordは疎であるため、secondary mixer外部IDが存在しても曲線配列は空になり得る。
 
-`Limits::max_animation_bytes` は圧縮・展開ミキサーとタイムライン名、`Limits::max_animation_items` はタイムライン、トラック、BINC文字列・配列の上限に使う。
+`Database::camera_2d_layer(layer_id, limits)` は `LayerType` のcamera bit、folder flag、元frame center、`Camera2DResizableImageInfo` のheader・point record宣言を検証する。`Camera2DTransform` は寸法、scale、rotation、position、image center、4隅を型付きで返し、未命名wordとraw payloadも保持する。`ClipFile::read_animation` はkind `2005` と対象camera layerをUUIDで照合し、5個の必須current/default valueを `Camera2DTrackValues` へまとめる。`Animation::camera_track_for_layer` からlayer単位で取得できる。
+
+`Limits::max_animation_bytes` は圧縮・展開ミキサー、タイムライン名、2Dカメラsnapshot、`Limits::max_animation_items` はタイムライン、トラック、BINC文字列・配列、camera frame cornerの上限に使う。
 
 `timelapse` featureの `Database::time_lapse(limits)` は、manager・record・blobの連結リストを再構成し、循環、共有、欠落、canvas所有、連続offsetを検証する。各 `TimeLapseBlob` は外部ID、raw `BlobType`、圧縮・展開サイズを保持する。`ClipFile::read_time_lapse_blob` は1 BLOBだけを上限付きで確保し、`copy_time_lapse_blob` はwriterへ展開する。どちらもbig-endian長付きzlib、DBの `BlobSizeCompressed`（4-byte長を含む）、実際の展開長を照合する。
 
@@ -66,4 +69,4 @@
 
 `LayerType` はビットフラグとして複数用途を表し、`LayerComposite` にも将来値が追加され得る。このため `LayerKind` と `BlendMode` は閉じたenumにせず、`raw()` で元の整数を必ず返す。`is_pixel()` などは、現在確認できたビットだけを判定する補助APIである。
 
-ベクターは外部本体への安全な到達、定規は表間参照と特殊定規parameterまで対応したが、ベクター線本体・制御点・ブラシ属性はまだ解釈しない。テキストは本文と属性レコードの境界まで対応したが、フォント・段落・変形属性は未解釈である。補正レイヤーは9種の属性parameterまで対応した。アニメーションはprimary/secondary mixerのFCurveとinline value map、タイムラプスはfull key frameとdelta patchを含む内部WebP frame索引まで対応したが、カメラ・変形の意味付けと `GMIK` 側parameterは未解釈である。タイムラプスの実時間はファイルに存在しないため復元対象にしない。3Dの詳細BLOBも同様に未解釈である。これらは元のDBへ `Database::connection()` で読み取りアクセスできるが、安定した意味モデルとしては、最小差分コーパスで検証後に追加する。
+ベクターは外部本体への安全な到達、定規は表間参照と特殊定規parameterまで対応したが、ベクター線本体・制御点・ブラシ属性はまだ解釈しない。テキストは本文と属性レコードの境界まで対応したが、フォント・段落・変形属性は未解釈である。補正レイヤーは9種の属性parameter、2Dカメラはlayer snapshot・現在値・軸付きcurveまで対応した。タイムラプスはfull key frameとdelta patchを含む内部WebP frame索引まで対応したが、`GMIK` 側parameterは未解釈である。タイムラプスの実時間はファイルに存在しないため復元対象にしない。3Dの詳細BLOBも同様に未解釈である。これらは元のDBへ `Database::connection()` で読み取りアクセスできるが、安定した意味モデルとしては、最小差分コーパスで検証後に追加する。

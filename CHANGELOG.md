@@ -29,6 +29,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   fixed-point raw values, gradient curves, and opaque future-kind fallback.
 - Validated vector-ruler references and typed, bounded metadata for all nine
   observed special-ruler table kinds and perspective vanishing-point chains.
+- Validated 2D-camera layer snapshots, typed kind-`2005` current values, and
+  axis-qualified primary and secondary position/center curves.
 
 ### Documentation
 

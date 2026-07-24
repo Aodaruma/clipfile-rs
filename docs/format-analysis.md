@@ -212,11 +212,15 @@ BINC文字列表を用いて `FCurve` を列挙すると、`Frame` / `Value` に
 
 `TimeLine.FirstTrack` と `Track.TrackNextIndex` は5件でそれぞれ60、60、76、46、49行を重複なく全件到達し、0で終端した。`1000` の42行はすべて描画Mipmapと子を持つfolder、`2003` の5行はすべて `LayerType=1584` / `SpecialRenderType=20` のpaper、`4000` の4行はすべて `PlayTime` 曲線・値を持つため、これらを判定helperへ追加した。`4000` の対象layerは4件とも `LayerType=0` のleafで `LayerType=256` のroot直下にあり、2Dカメラ用trackではなかった。`2001` は描画Mipmapを持つ静止画像leaf 45行で、42行は `LayerType=1` のraster、残る3行は `ResizableImageInfo` と元Mipmapを持つ `LayerType=0` のresizable imageだった。全45行でprimary/secondary曲線とvalue entryが空だったため、static-image判定helperへ追加した。
 
-inline `TrackValueMap` は全291行で境界まで一致した。先頭はbig-endianの固定長8とentry数で、各entryは自身を含むbig-endian record長、UTF-16BEのparameter名と文字列値、type判別値、payloadを持つ。type 0は8-byte IEEE 754倍精度、type 2は4-byte整数だった。`2000` の191行には各1件の `ImageCelName` があり、整数値は対応FCurveの値と191/191で一致した。`4000` の4行は `PlayTime`、`4001` の4行は各 `PlayTime` / `AudioPlayer` / `AudioVolume` を持つ。公開APIは確認済み2型を型付きで返し、未知typeのpayloadも保持する。
+inline `TrackValueMap` は全291行で境界まで一致した。先頭はbig-endianの固定長8とentry数で、各entryは自身を含むbig-endian record長、UTF-16BEのparameter名と文字列値、type判別値、payloadを持つ。type 0は8-byte IEEE 754倍精度、type 2は4-byte整数だった。`2000` の191行には各1件の `ImageCelName` があり、整数値は対応FCurveの値と191/191で一致した。`4000` の4行は `PlayTime`、`4001` の4行は各 `PlayTime` / `AudioPlayer` / `AudioVolume` を持つ。公開APIは確認済み型を型付きで返し、未知typeのpayloadも保持する。
 
 `TrackActionMixer2` は全行に外部IDがあり、cel・play-time・audio行では `0110binc` の型schemaと値領域が分離している。値recordは先頭fieldの `Int32[]` / `Name` / `End` metadata headerでschema側の見かけ上の `FCurve` と区別できる。後続fieldも3語headerの先頭は `Int32[]` だが、残り2語は数値・文字列・byte配列で異なる。その後はfield名・配列型・要素数・payload・2個の0終端が続く。
 
 Rust APIで5件を再読込すると、secondaryの値recordは37曲線・37キーあり、内訳は `ImageCelName` 32曲線と `AudioPlayer` 5曲線だった。primary 270曲線の完全な複製ではなく、`PlayTime` などには対応するsecondary値recordがない。この37件は対応するprimary曲線と時刻・値・補間・傾き・タグ・revision flagがすべて完全一致した。数値配列はprimaryの `Single[]` に対してsecondaryでは `Double[]` であり、公開APIは `SecondaryAnimationCurve` / `SecondaryAnimationCurveKeyframe` から `f64` のまま返す。
+
+匿名の2Dカメラ最小差分3件では、カメラフォルダー追加時に `LayerType=512`、folder flag、timeline keyframe flag、184-byteの `Camera2DResizableImageInfo` と `TrackKind=2005` が1件追加された。trackのvalue mapは `ImageCenter`、`ImagePosition`、`ImageRotation`、`ImageScale`、`Opacity` の5件で、type 3はbig-endianの有限なdouble 2要素だった。移動後は位置が `(432, 324)` から `(447, 327)` へ変わり、primary/secondaryの双方にcenter X/Y、position X/Y、rotation、scaleの6曲線・各1キーが現れた。axis付き曲線は `FCurve` headerのproperty数が2となり、`Type` に加えて `Axis=X/Y` を持つ。
+
+184-byte snapshotはbig-endianで、120-byte header、16-byte point record、4点、720×540の寸法、2軸scale、rotation、position、image center、4隅のdouble XYとして末尾まで一致した。移動差分ではpositionと4隅が同じ `(15, 3)` だけ変化した。公開APIは件数・byte数・寸法、有限値、宣言長を検証し、未命名のheader 11語と完全なraw payloadを保持する。検証データの実体保存先、UUID、ユーザーパス、個人・作品情報は本文に記録しない。
 
 ## タイムラプス
 
@@ -245,7 +249,7 @@ blobの `BlobOffset` はrecord内で0から隙間なく連続し、`BlobSizeComp
 - `BlockStatus` 値の意味とチェックサムアルゴリズム
 - 1-bit、異なるタイル寸法・追加チャンネル配置
 - ベクター本体、テキスト属性、3D、定規の未命名header・guide BLOB、補正以外の特殊レイヤーの完全な意味
-- カメラ・変形、タイムラプスの `GMIK` parameterの完全な意味
+- 2Dカメラsnapshotの未命名header語、3D変形、タイムラプスの `GMIK` parameterの完全な意味
 - アプリケーションのバージョン間での完全なスキーマ移行規則
 - 安全な書き戻しに必要な全整合性条件
 

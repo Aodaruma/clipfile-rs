@@ -237,6 +237,12 @@ impl LayerKind {
         self.0 & 256 != 0
     }
 
+    /// Whether the observed 2D-camera layer bit is set.
+    #[must_use]
+    pub const fn is_camera_2d(self) -> bool {
+        self.0 & 512 != 0
+    }
+
     /// Whether the observed correction-layer bit is set.
     #[must_use]
     pub const fn is_correction(self) -> bool {

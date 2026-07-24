@@ -34,7 +34,8 @@ mod vector;
 #[cfg(feature = "animation")]
 pub use animation::{
     Animation, AnimationCurve, AnimationCurveKeyframe, AnimationTrack, AnimationTrackKind,
-    AnimationTrackValue, AnimationTrackValueEntry, CelKeyframe, CelTrack, SecondaryAnimationCurve,
+    AnimationTrackValue, AnimationTrackValueEntry, Camera2DLayerData, Camera2DPoint,
+    Camera2DTrackValues, Camera2DTransform, CelKeyframe, CelTrack, SecondaryAnimationCurve,
     SecondaryAnimationCurveKeyframe, Timeline,
 };
 #[cfg(feature = "sqlite")]
