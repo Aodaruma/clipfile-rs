@@ -1,6 +1,6 @@
 use std::{error, fmt, io};
 
-/// An error encountered while reading or validating a CLIP container.
+/// An error encountered while reading, writing, or validating a CLIP container.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
@@ -158,6 +158,12 @@ pub enum Error {
         /// Human-readable details.
         reason: String,
     },
+    /// A requested CLIP rewrite would violate a validated invariant.
+    #[cfg(feature = "write")]
+    InvalidWrite {
+        /// Human-readable details.
+        reason: String,
+    },
 }
 
 impl fmt::Display for Error {
@@ -257,6 +263,10 @@ impl fmt::Display for Error {
             #[cfg(feature = "timelapse")]
             Self::InvalidTimeLapse { reason } => {
                 write!(formatter, "invalid time-lapse data: {reason}")
+            }
+            #[cfg(feature = "write")]
+            Self::InvalidWrite { reason } => {
+                write!(formatter, "cannot write CLIP container: {reason}")
             }
         }
     }

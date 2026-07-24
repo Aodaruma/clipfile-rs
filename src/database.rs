@@ -180,6 +180,10 @@ impl Database {
         &self.connection
     }
 
+    pub(crate) fn connection_mut(&mut self) -> &mut Connection {
+        &mut self.connection
+    }
+
     /// Runs SQLite's bounded quick integrity check.
     pub fn quick_check(&self) -> Result<()> {
         let result: String = self

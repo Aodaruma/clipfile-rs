@@ -1,10 +1,11 @@
 //! Low-level, streaming access to CLIP STUDIO PAINT container files.
 //!
 //! The on-disk format is proprietary and not officially documented. This
-//! crate starts with the portions that can be validated consistently: the
+//! crate focuses on the portions that can be validated consistently: the
 //! `CSFCHUNK` envelope, top-level chunks, the file header, and external chunk
-//! headers. Higher-level document and image APIs will be added as those parts
-//! of the format become sufficiently well understood.
+//! headers. Optional features add document, image, animation, time-lapse, and
+//! conservative low-level rewriting APIs as those parts become sufficiently
+//! well understood.
 
 #[cfg(feature = "animation")]
 mod animation;
@@ -30,6 +31,8 @@ mod text;
 mod timelapse;
 #[cfg(feature = "sqlite")]
 mod vector;
+#[cfg(feature = "write")]
+mod writer;
 
 #[cfg(feature = "animation")]
 pub use animation::{
@@ -79,3 +82,5 @@ pub use timelapse::{
 };
 #[cfg(feature = "sqlite")]
 pub use vector::VectorDataSource;
+#[cfg(feature = "write")]
+pub use writer::{ClipWriter, EditableDatabase, WriteSummary};

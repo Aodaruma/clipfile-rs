@@ -7,6 +7,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in `write` support with an editable in-memory SQLite database, exact
+  no-change round trips, external-body replacement, offset repair, and
+  create-new output validation.
+
+### Fixed
+
+- Keep animation and page-management validation compatible with the declared
+  Rust 1.85 minimum version.
+
 ## [0.3.0] - 2026-07-24
 
 ### Added

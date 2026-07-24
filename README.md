@@ -40,13 +40,17 @@ Implemented:
   and axis-qualified position/center curves; and
 - optional validated time-lapse manager/record/blob chains with bounded reads
   and streaming decompression, plus streaming internal WebP frame indexing; and
-- optional `Offscreen.Attribute`, zlib tile, and RGBA/grayscale raster decoding.
+- optional `Offscreen.Attribute`, zlib tile, and RGBA/grayscale raster decoding;
+  and
+- opt-in validated container rewriting with editable SQLite metadata,
+  byte-preserving external bodies, and repaired absolute offsets.
 
 Not implemented yet:
 
 - semantic vector/text-attribute decoding, 3D data, or time-lapse
   playback/timestamp semantics; and
-- writing or modifying files.
+- high-level encoders for raster, vector, text, animation, and other external
+  object bodies.
 
 See [the format analysis](docs/format-analysis.md) and
 [the implementation plan](docs/implementation-plan.md) for the research status
@@ -64,8 +68,8 @@ clipfile = "0.3"
 ```
 
 Enable `sqlite` for document metadata, `raster` for SQLite and raster decoding,
-`animation` for timeline curves, or `timelapse` for time-lapse metadata and
-payload access:
+`animation` for timeline curves, `timelapse` for time-lapse metadata and
+payload access, or `write` for validated low-level rewriting:
 
 ```toml
 [dependencies]
@@ -101,6 +105,7 @@ cargo run --features timelapse --example inspect -- path/to/drawing.clip --timel
 cargo run --features sqlite --example inspect_cmc -- path/to/project.cmc
 cargo run --features sqlite --example inspect_corrections -- path/to/drawing.clip
 cargo run --features sqlite --example inspect_rulers -- path/to/drawing.clip
+cargo run --features write --example rewrite -- input.clip new-output.clip
 ```
 
 The optional `sqlite` feature uses a bundled SQLite build for reproducible
@@ -192,9 +197,20 @@ decompression, and can assemble currently understood 8-bit `(alpha, BGRA)`
 or grayscale layouts.
 Unknown and bit-packed layouts return an explicit unsupported-format error.
 
-The API is intentionally read-only at this stage. Treat all input as
-untrusted; the parser validates structural bounds, but coverage of the full
-format is still incomplete.
+The opt-in `write` feature provides `ClipFile::writer`. It clones the embedded
+SQLite database into writable memory, preserves unchanged external bodies,
+repairs `ExternalChunk.Offset` and the `CHNKHead` database offset, and can
+replace a complete opaque external body. `write_to_path` creates a new path,
+flushes it, then reopens and validates the container, SQLite database, and
+external index. It never overwrites an existing path.
+
+This is a conservative low-level writer, not yet a semantic image or animation
+encoder. Unknown top-level chunk layouts are rejected, and callers replacing
+an external body must also make any related SQLite size or metadata changes.
+See [the writing guide](docs/writing.md) for the API and current guarantees.
+
+Treat all input as untrusted; the parser and writer validate structural bounds,
+but coverage of the full format is still incomplete.
 
 ## Development
 
