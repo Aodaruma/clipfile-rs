@@ -4,14 +4,12 @@
 
 ## ブロックチェックサム
 
-- 状態: 未解明
-- 観測: データありブロックは非0、空ブロックは0。
-- 不一致を確認済み: 圧縮前後のCRC-32、Adler-32、zlib末尾Adler-32。
-- 現在の扱い: 読み取り時は検証せず不透明な `u32` として保持。書き込み時は変更しない値を保存し、既存BlockDataの再圧縮だけ `BlockChecksumMode::Zero` の明示を要求する。
-- 追加観測: 匿名の短いストローク2件と部分マスクでも候補不一致。使用したCRCカタログの全32-bit variant、ヘッダー込み範囲、City/Farm/Metro/SpookyHash、MurmurHash2/3、FNV、Boost、xxHash、暗号学的ハッシュの32-bit部分にも一致しなかった。
+- 状態: 解明済み
+- 生成規則: `Adler32(compressed_len.to_le_bytes() + zlib_payload)`。値は`BlockCheckSum`配列へ32-bit big-endianで格納する。
+- 検証: 匿名ローカル106ファイル・375,717ブロックのうち、payloadあり54,710件を調査し、非0チェックサム54,649件が全件一致した。不一致は0件。0値61件は互換mode等として別集計した。
+- 現在の扱い: 読み取り時は元の`u32`を保持し、書き込み時は対象外の値を保存する。再圧縮ブロックは`BlockChecksumMode::CspCompatible`で規則どおり生成できる。
 - 互換性観測: 全チェックサムを0にした匿名ローカル複製をCLIP STUDIO PAINTで開き、表示を確認できた。別名保存後も0が保持された。
-- 影響: 少なくとも検証したアプリ版では0を互換値にできる可能性が高い。writerは既存値の保存を基本とし、既存BlockDataの1ブロック再圧縮に限って再生成値0をopt-inで提供する。空ブロックへのpayload設定も同じ明示modeに限定する。
-- 次の調査: 0値文書を複数アプリ版で開き、編集後に再生成されたブロックとの関係も比較する。
+- 影響: `Zero`は後方互換の明示modeとして残すが、新規コードは`CspCompatible`を使用する。
 
 ## `BlockStatus` の意味
 
@@ -40,9 +38,18 @@
 ## レイヤー種別と特殊機能
 
 - 状態: 補正レイヤーparameter、特殊定規metadata、2Dカメラは解明・実装済み、その他は部分的
-- 観測: `LayerType` は複数の数値を取り、サンプル間でスキーマ列にも差がある。匿名のベクターレイヤーでは `LayerType=0`、`VectorObjectList` 1行、40-byteの外部ID、268-byteの未分類外部本体を確認した。同レイヤーの描画Mipmapだけでは実際の線を復元できない例だった。匿名の単一テキストでは `LayerType=0`、`TextLayerType=0`、UTF-8本文BLOB、1,029-byteの属性BLOB、属性version 1を確認し、追加配列はNULLだった。公開サンプルの補正レイヤー32件は `LayerType=4098` で、`FilterLayerInfo` kind 1～9をすべて末尾まで復号できた。定規サンプル18レイヤーではベクター定規参照8件と特殊manager 10件があり、9定規表の16定規と透視消失点chainを全件到達できた。
-- 現在の扱い: レイヤー種別の元の整数値を保持し、ベクターは外部本体まで上限付きで取得する。テキストはUTF-8本文とオブジェクト別属性の境界まで検証するが、各属性の意味は不透明なバイト列として保持する。補正レイヤーは `Database::correction_layer` から9種の型付きparameterと元payloadを返し、未知kindはpayloadを保持する。定規は `Database::ruler_layer` で所有関係・chain・curve点・guide長、2Dカメラは `Database::camera_2d_layer` でsnapshot構造を検証する。
+- 観測: `LayerType` は複数の数値を取り、サンプル間でスキーマ列にも差がある。匿名のベクターレイヤーでは `LayerType=0`、`VectorObjectList` 1行、40-byteの外部ID、268-byteの未分類外部本体を確認した。同レイヤーの描画Mipmapだけでは実際の線を復元できない例だった。匿名の単一テキストでは `LayerType=0`、`TextLayerType=0`、UTF-8本文BLOB、1,029-byteの属性BLOB、属性version 1を確認し、primary以外の文字列・属性配列はNULLだった。公開サンプルの補正レイヤー32件は `LayerType=4098` で、`FilterLayerInfo` kind 1～9をすべて末尾まで復号できた。定規サンプル18レイヤーではベクター定規参照8件と特殊manager 10件があり、9定規表の16定規と透視消失点chainを全件到達できた。
+- 現在の扱い: レイヤー種別の元の整数値を保持し、ベクターは外部本体まで上限付きで取得する。テキストはUTF-8本文とオブジェクト別属性の境界に加え、属性parameter envelopeとobject IDを検証し、安全なtemplate cloneでobjectを追加できる。各style/layout属性の意味は不透明なバイト列として保持する。補正レイヤーは `Database::correction_layer` から9種の型付きparameterと元payloadを返し、未知kindはpayloadを保持する。定規は `Database::ruler_layer` で所有関係・chain・curve点・guide長、2Dカメラは `Database::camera_2d_layer` でsnapshot構造を検証する。
 - 次の調査: ベクター本体の線・制御点・ブラシ属性と、テキストのフォント・段落・変形属性を差分比較する。3Dも1種類ずつ含む最小コーパスを作成する。定規はcurve header 4語と透視guide BLOBの意味を差分比較する。
+
+## テキスト属性のゼロ生成と座標
+
+- 状態: 属性境界・object ID・template cloneは解明済み、ゼロ生成と座標移動は未解明
+- 観測: 16ファイル・54 text layer・57 objectで、`TextLayerAttributes` と `TextLayerAddAttributesV01` itemはlittle-endianのparameter envelopeとして末尾まで一致した。後者はprimaryを含むlength-prefixed arrayで、全54レイヤーのitem数がobject数と一致した。parameter 50はmain/additionalの57組で同値かつ同一文書内一意だった。
+- ゼロ生成を保留する理由: parameter順序が2種類あり、run、font、layout、geometryを含む可変payloadの必須条件を固定できない。参考実装にも完成したwriterはない。
+- 座標を保留する理由: parameter 42（16 bytes）と64（32 bytes）は全57objectにあるが、整数4値の矩形と整数8値のquadを単純な100倍min/maxで対応させる仮説は0/57で一致しなかった。
+- 現在の扱い: 既存objectのmain/additional属性を複製し、両方のparameter 50を文書内の新規一意IDへ置換し、3配列をatomicに更新する。geometryは複製するため初期位置は重なりうる。異なる文字幅へのrun再構築、座標移動、完全な属性builderは提供しない。
+- 次の調査: 同一baselineで位置だけをX/Y各1値ずつ変え、42/63/64とlayer座標列の差分を比較する。font、縦書き、段落、複数runも1項目差分で必須parameterを確定する。
 
 ## 1-bitラスターデータ
 
@@ -62,11 +69,12 @@
 
 ## アニメーションの未解釈部分
 
-- 状態: Track chain、primary/secondary FCurve、inline `TrackValueMap`、2Dカメラまで対応
+- 状態: Track chain、primary/secondary FCurve、inline `TrackValueMap`、2Dカメラ、既存Trackの保守的cloneまで対応
 - 観測: 既存コーパス5件の291トラックからprimary 270曲線・12,347キーを復号した。`FirstTrack` / `TrackNextIndex` は全件を一度ずつ通る終端付きchainだった。`1000` はnon-cel folder 42/42、`2001` はstatic image 45/45、`2003` はpaper 5/5、`4000` は `PlayTime` 4/4、`4001` はaudio 4/4と対応した。`2001` の内訳はraster 42と `ResizableImageInfo` を持つresizable image 3で、全件の曲線とvalue entryが空だった。`2000` は複数の `ImageCelName` を持つ。補間、左右傾き、任意タグもキー数一致を確認した。`TrackValueMap` は全291行でrecord境界まで一致し、type 0の倍精度値とtype 2の文字列・整数値を確認した。`2000` の整数値は対応FCurve値と191/191で一致した。secondary `0110binc` の値recordは先頭fieldの3語headerを、先頭が `Int32[]`、残りが有効な文字列IDとしてschema記述と区別する。実値は46曲線・55キー（cel 32、audio 5、play-time 9）で、cel・audioの37曲線はprimaryと完全一致、play-time 9曲線はsecondary側の倍精度を保ったまま許容差0.001以内で一致した。`4000` の4行は対象layerがtype 0のleafでtype 256のroot直下にあり、2Dカメラ用trackではないことも確認した。
 - 2Dカメラ: 匿名最小差分で `LayerType=512` と `TrackKind=2005` を確認した。value map type 3はdouble XYで、center・position・rotation・scale・opacityの5現在値を持つ。位置を `(15, 3)` 移動するとprimary/secondary双方へcenter X/Y、position X/Y、rotation、scaleの6曲線が現れ、snapshotのpositionと4隅も同量移動した。追加の1項目差分からrotationは度、scale・opacityは百分率で、value mapとsnapshotは保存時のタイムライン位置を反映すると確認した。
+- Track生成: `_PW_ID`の自動採番、最大`MainId`+1、timeline bank、末尾chain splice、16-byte UUID、layer UUID対応、primary/secondaryの独立external ID、展開後BINC size列までは差分で一貫した。未知列を含むrowとmixer完全bodyをテンプレートからcloneするAPIへ実装した。
 - 現在の扱い: chainを検証してnext ID、raw track kind、primaryの単精度曲線、secondaryの倍精度曲線、型付きvalue mapを公開する。`1000` / `2000` / `2001` / `2003` / `2005` / `4000` / `4001` は確認済みhelperを持つ。2Dカメラはlayer snapshot、保存位置の現在値、type 3の2次元値、軸付きcurveを型付きで返す。未知value typeとsnapshot raw payloadは保持する。snapshotの未命名11語は固定しない。従来の `CelTrack` は先頭のprimary `ImageCelName` を使う。
-- 次の調査: 2Dカメラの出力サイズ・回転中心とsnapshotの未命名wordを別の匿名最小差分で比較する。非ゼロ回転時にprefix先頭wordが0から1へ変化したが、意味はまだ固定しない。3D transformは別に調査する。
+- 次の調査: BINC object metadata、kind別の最小curve構成、`TrackOpen` / `TrackContentOpen` / `TrackOptionFlag`の一般規則を追加の同一baseline差分で比較し、テンプレート不要builderの可否を判断する。2Dカメラの出力サイズ・回転中心とsnapshotの未命名word、3D transformも別に調査する。
 - GUI検証補足: 2026-07-24に手動で匿名のbaseline・camera folder・position・scale・rotation・opacity差分を作成し、解析を完了した。生成物と解析scriptは `tester/` のみに保持する。
 
 ## タイムラプス内部ストリーム

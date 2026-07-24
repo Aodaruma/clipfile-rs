@@ -53,11 +53,28 @@ writer.write_to_path("new-output.clip")?;
 
 このAPIは外部本体を不透明なbyte列として扱う。ブロック、圧縮payload、チェックサム、タイムラプスの宣言サイズなどを生成・修復しない。置換内容と関連SQLite列の整合性は呼び出し側の責務である。1本体の上限は`Limits::with_max_write_external_body_size`で設定できる。
 
+`add_external_body` は、呼び出し側が指定した未使用identifierと完全な本体から、新しい`CHNKExta`をSQLite chunkの直前へ追加する。`ExternalChunk`の索引行と絶対offsetは書き込み時にprivateなSQLite複製へ追加され、`EditableDatabase`自体は変更しない。source、編集用索引、pending置換・追加のいずれかとidentifierが重複する場合は拒否する。
+
+```rust,no_run
+# use std::fs::File;
+# use clipfile::ClipFile;
+# let mut clip = ClipFile::open(File::open("input.clip")?)?;
+# let mut writer = clip.writer()?;
+# let unique_external_id = b"caller-provided unique identifier";
+# let complete_body = vec![0_u8; 16];
+writer.add_external_body(unique_external_id, complete_body)?;
+println!("pending additions: {}", writer.addition_count());
+writer.write_to_path("new-output.clip")?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+この低レベルAPIはidentifierや本体の用途別encodingを生成せず、参照元SQLite rowも呼び出し側がtransactionで設定する。失敗時にpending追加を取り消すには`remove_external_addition`を使う。ライブラリ内のsemantic writerは、観測済み形式に沿った衝突しないidentifierを生成し、複数本体やSQLite更新の途中で失敗した場合にstage済み追加をrollbackする。`write_to_path`は追加後のcontainerと`ExternalChunk`索引も再オープンして検証する。identifier、本体、top-level chunk数には対応する`Limits`が適用される。
+
 ## 既存ラスターブロックの再エンコード
 
 `replace_block_bytes` は、既存の `BlockData` 外部本体に含まれる1ブロックを、展開済みnative byte列からzlib再圧縮する。byte数は既存parameterの `channels × width × height` と完全一致する必要がある。対象以外の圧縮payload、ブロックindex・parameter・status・checksumは保持し、空ブロックへ初めてpayloadを設定することもできる。
 
-`BlockCheckSum` のアルゴリズムは未解明である。再エンコード時は、ローカル検証したアプリ版で受理された0を保存する `BlockChecksumMode::Zero` を呼び出し側が明示しなければならない。複数アプリ版での互換性は保証しない。
+`BlockCheckSum` は、4-byte little-endianの圧縮長と、それに続くzlib圧縮byte列を連結した範囲のAdler-32である。通常は `BlockChecksumMode::CspCompatible` を指定する。従来の `BlockChecksumMode::Zero` も、ローカル検証したアプリ版が0を受理する互換modeとして残しているが、新規コードではCSP互換生成を推奨する。checksum値自体は `BlockCheckSum` 配列へ32-bit big-endianで保存される。
 
 ```rust,no_run
 use clipfile::{BlockChecksumMode, ClipFile};
@@ -72,7 +89,7 @@ let block = writer.replace_block_bytes(
     external_id,
     block_index,
     native_tile_bytes,
-    BlockChecksumMode::Zero,
+    BlockChecksumMode::CspCompatible,
 )?;
 println!("compressed bytes: {}", block.compressed_size());
 writer.write_to_path("new-output.clip")?;
@@ -89,6 +106,116 @@ cargo run --features "write,raster" --example invert_first_tile -- input.clip ne
 
 最後の引数はlayer IDである。`cargo run --features raster --example inspect -- input.clip --raster` の `decoded layer ...` から候補を確認できる。この例は低レベルbyte APIの実演であり、色チャンネルだけでなくnative alpha等も反転する。
 
+## Text
+
+`EditableDatabase::replace_text_object_text` は、既存text objectの本文だけを置換する。styleやrun情報を含む属性BLOBの完全なencoderは未確定であるため、対応する各文字のUTF-8 byte幅とUTF-16 code unit幅がすべて同じ場合に限定する。総byte数だけが一致して文字境界が異なる置換は拒否する。
+
+```rust,no_run
+# use std::fs::File;
+use clipfile::{ClipFile, Limits};
+# let mut clip = ClipFile::open(File::open("input.clip")?)?;
+let mut writer = clip.writer()?;
+let old = writer.database().replace_text_object_text(
+    42,
+    0,
+    "Hello",
+    Limits::default(),
+)?;
+println!("replaced {old:?}");
+writer.write_to_path("new-output.clip")?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`EditableDatabase::add_text_object_from_template` は、既存objectのstyle/layout属性を複製して同じレイヤーの末尾へobjectを追加する。`TextLayerStringArray`、`TextLayerAttributesArray`、primary分も含む `TextLayerAddAttributesV01` の3配列を検証し、後者2つのparameter 50へ文書内で一意な新IDを設定してから、1回のSQL更新で同期する。本文にはtemplateと文字ごとに同じUTF-8/UTF-16幅が必要である。
+
+```rust,no_run
+# use std::fs::File;
+use clipfile::{ClipFile, Limits};
+# let mut clip = ClipFile::open(File::open("input.clip")?)?;
+let mut writer = clip.writer()?;
+let added = writer.database().add_text_object_from_template(
+    42,
+    0,
+    "World",
+    Limits::default(),
+)?;
+println!("new object: {}, id: {}", added.object_index(), added.identifier());
+writer.write_to_path("new-output.clip")?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+追加objectのgeometryもtemplateから複製されるため、初期位置は重なりうる。BBOX/quadの座標系はまだ確定しておらず、このAPIは自動移動を行わない。属性のゼロ生成、異なる文字幅へのrun再構築、object削除は未対応である。
+
+## Vector
+
+vector stroke全体を新規生成するserializerは未確定である。`replace_vector_data_body` は、`Database::vector_data_sources` が返した型付き参照が編集用DBでも同じrowとidentifierを指すことを検証してから、完全な外部本体を置換する。これはstroke単位のsemantic encoderではなく、意図的に明示したopaque境界である。
+
+既存bodyが検証済みの92-byte stroke header / 88-byte point layoutだけで構成される場合、`translate_vector_data` は全point位置とstroke/point bounding boxを整数canvas単位で平行移動する。brush、pressure、opacity、flags、未知byteは保持し、別layoutは変更前に拒否する。
+
+```rust,no_run
+# use std::fs::File;
+# use clipfile::{ClipFile, Limits};
+# let mut clip = ClipFile::open(File::open("input.clip")?)?;
+let database = clip.open_database()?;
+let source = database
+    .vector_data_sources(42, Limits::default())?
+    .into_iter()
+    .next()
+    .ok_or("no vector data")?;
+let replacement_body = std::fs::read("vector-body.bin")?;
+let mut writer = clip.writer()?;
+writer.replace_vector_data_body(&source, replacement_body, Limits::default())?;
+writer.write_to_path("new-output.clip")?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+## Animation
+
+`write`と`animation`を同時に有効にすると、検証済みの既存recordを対象に次を更新できる。
+
+- `replace_animation_track_value`: `TrackValueMap`の既知型を、同じ型の有限値へ置換する。
+- `replace_animation_curve_keyframe_numeric`: 既存primary FCurveの時刻・値を置換し、同名・同軸のsecondary FCurveがあれば同期する。
+- `replace_animation_cel_tag`: 既存`ImageCelName` keyのTagをprimary/secondaryで同期し、現在値が同じ旧Tagを指す場合は`TrackValueMap`も同期する。
+- `clone_animation_track_from_template`: 既存Trackの全非identity列とmixer本体を複製し、未追跡layerへ割り当ててtimeline末尾へ連結する。
+
+curveやcelの追加・削除は行わず、BINCの未知fieldはそのまま保持する。Tag追加で展開後BINC長が変わる場合は、存在する`TrackActionMixerSize` / `TrackActionMixer2Size`も更新する。既存size列が外部本体と一致しない入力は変更前に拒否する。
+
+Track cloneは任意曲線を生成するbuilderではない。`_PW_ID`はSQLiteに再採番させ、`MainId`はTrack表の最大値+1、`TrackUuid`は衝突検査済みUUID v4を生成する。primary/secondary mixerは別々の新規 `extrnlid` UUID v4へ同じ完全bodyを複製し、展開後BINC長とsize列を事前照合する。その他の未知列はSQLiteの`INSERT ... SELECT`でstorage classごと保持する。
+
+対象timelineは`FirstTrack`から同じ`BankId`の全Trackへ一度ずつ到達して0で終端する必要がある。cloneは既存末尾の`TrackNextIndex`へ追加し、空chainなら`TimeLine.FirstTrack`を設定する。対象layerは一意な正規化可能UUIDを持ち、既存Trackから未参照でなければならない。Track kindと対象layerの意味的互換性は推測できないため、呼出側が同種のテンプレートを選ぶ。
+
+```rust,no_run
+# use std::fs::File;
+use clipfile::{AnimationTrackValue, ClipFile, Limits};
+# let mut clip = ClipFile::open(File::open("input.clip")?)?;
+let mut writer = clip.writer()?;
+writer.replace_animation_cel_tag(7, 0, "B", Limits::default())?;
+writer.database().replace_animation_track_value(
+    7,
+    "Opacity",
+    AnimationTrackValue::Float(75.0),
+    Limits::default(),
+)?;
+writer.write_to_path("new-output.clip")?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+```rust,no_run
+# use std::fs::File;
+# use clipfile::{ClipFile, Limits};
+# let mut clip = ClipFile::open(File::open("input.clip")?)?;
+let mut writer = clip.writer()?;
+let cloned = writer.clone_animation_track_from_template(
+    7,  // template Track.MainId
+    1,  // target TimeLine.MainId
+    42, // target untracked Layer.MainId
+    Limits::default(),
+)?;
+println!("new track {}", cloned.track_id());
+writer.write_to_path("new-output.clip")?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
 ## 現在の保証
 
 - 元ファイルを変更しない。
@@ -99,13 +226,18 @@ cargo run --features "write,raster" --example invert_first_tile -- input.clip ne
 - open transaction、重複・欠落external ID、SQLite破損、上限超過を拒否する。
 - block再エンコードでは展開byte数、既存block index、zlib header、再構築後のBlockData境界を検証する。
 - block再エンコードの対象外payload・status・checksum・parameterを保持する。
+- block再エンコード時は、同じexternal IDを参照する全`Offscreen.Attribute.BlockSize`をtransaction内で同期する。
 - caller-provided stream向けの`write_to`は、書き込み前に全構造を準備・検証する。
 
 ## 現在の制約
 
 - 対応するtop-level構成はstrict validatorが受理する既知の`CHNKHead`、`CHNKExta`、`CHNKSQLi`、`CHNKFoot`順序に限る。未知top-level chunkは失わずに書くのではなく、入力時点で拒否する。
-- rasterは既存BlockDataのnative tile 1件を置き換える低レベルAPIだけを実装している。画像全体、vector、text、animation、time-lapse、3Dのsemantic encoderは未実装。
-- `BlockCheckSum`の生成規則は未解明であり、再エンコードは明示的な0互換modeに限定する。
+- imageは既存base Mipmapのrender rasterまたはlayer maskの全画素置換に対応する。派生Mipmap、レイヤーthumbnail、canvas previewは再生成しないため、アプリ側の縮小表示や初回表示は保存済みcacheが一時的に残る場合がある。
+- textは既存objectの文字ごとの符号化幅を維持する本文置換と、検証済みtemplate属性からのobject追加に対応する。style属性のゼロ生成、異なる文字幅へのrun再構築、座標移動、object削除は未実装。アプリの保存済み描画cacheは本文選択などで再構築されるまで旧表示になる場合がある。
+- vectorは検証済みlayoutの既存stroke平行移動とopaque body全体の置換に対応するが、strokeの新規生成・追加削除・brush編集は未実装。
+- animationは既存Trackの保守的な完全cloneと、型付き値・数値curve key・cel Tagの更新に対応する。任意のTrack/curve/keyをゼロから組み立てるbuilderと削除は未実装。
+- time-lapseと3Dのsemantic encoderは未実装。
+- 再エンコードしたBlockDataは、圧縮長prefix込みのzlib payloadからCSP互換Adler-32を生成する。既存の明示的な0互換modeも後方互換のため保持する。
 - 元ファイルのatomic置換APIは未実装。必要な場合も、検証済みの新規出力を利用者側で明示的に切り替える。
 - CLIP STUDIO PAINTでの再オープン確認は現時点で1アプリ版である。複数版互換は継続検証する。
 

@@ -22,7 +22,31 @@
 
 `LayerTree` は再帰型ではなく、`children_of(layer_id)` で順序付きの子IDを返す。これにより、敵対的な深い入力をRustのコールスタックへ載せず、利用者も再帰・反復のどちらかを選べる。
 
-`write` featureの`ClipFile::writer()`は、strict validation後の埋め込みSQLiteをprivateな書き込み可能DBへ複製する。利用者は`EditableDatabase::connection`で明示的にSQLを実行できる。再構築時は未知のSQLite列と変更しない外部本体を保持し、`CHNKHead`のSQLite位置と全`ExternalChunk.Offset`を修復する。`write_to_path`は既存パスを上書きせず、新規出力をflush・同期・再オープンしてcontainer、SQLite、external indexを検証する。完全な不透明本体差し替えに加え、`replace_block_bytes`は既存BlockDataの1ブロックだけをnative byte列から再圧縮する。チェックサムは未解明のため `BlockChecksumMode::Zero` の明示が必要であり、一般的なsemantic encoderではない。詳細は[書き込みガイド](writing.md)を参照する。
+## 合成モード
+
+`Layer::blend_mode()` は `LayerComposite` を `BlendMode` として返す。匿名化したローカルcorpus 91ファイルを読み取り専用で走査し、次の29値を実データで確認した。
+
+| raw値 | `BlendMode` 定数 | raw値 | `BlendMode` 定数 |
+|---:|---|---:|---|
+| 0 | `NORMAL` | 15 | `SOFT_LIGHT` |
+| 1 | `DARKEN` | 16 | `HARD_LIGHT` |
+| 2 | `MULTIPLY` | 17 | `VIVID_LIGHT` |
+| 3 | `COLOR_BURN` | 18 | `LINEAR_LIGHT` |
+| 4 | `LINEAR_BURN` | 19 | `PIN_LIGHT` |
+| 5 | `SUBTRACT` | 20 | `HARD_MIX` |
+| 6 | `DARKER_COLOR` | 21 | `DIFFERENCE` |
+| 7 | `LIGHTEN` | 22 | `EXCLUSION` |
+| 8 | `SCREEN` | 23 | `HUE` |
+| 9 | `COLOR_DODGE` | 24 | `SATURATION` |
+| 10 | `GLOW_DODGE` | 25 | `COLOR` |
+| 11 | `ADD` | 26 | `BRIGHTNESS` |
+| 12 | `ADD_GLOW` | 30 | `PASS_THROUGH` |
+| 13 | `LIGHTER_COLOR` | 36 | `DIVIDE` |
+| 14 | `OVERLAY` |  |  |
+
+`known_name()` は確認済み値の英語名を返し、未知値では `None` を返す。未知値を含む任意の値は `from_raw()` で作成でき、`raw()` で元の整数を損失なく取得できる。したがって、定数の追加によって将来のCLIP STUDIO PAINT形式との前方互換性を閉じない。
+
+`write` featureの`ClipFile::writer()`は、strict validation後の埋め込みSQLiteをprivateな書き込み可能DBへ複製する。利用者は`EditableDatabase::connection`で明示的にSQLを実行できる。再構築時は未知のSQLite列と変更しない外部本体を保持し、`CHNKHead`のSQLite位置と全`ExternalChunk.Offset`を修復する。`write_to_path`は既存パスを上書きせず、新規出力をflush・同期・再オープンしてcontainer、SQLite、external indexを検証する。完全な不透明本体差し替えに加え、`replace_block_bytes`は既存BlockDataの1ブロックをnative byte列から再圧縮し、`BlockChecksumMode::CspCompatible`で圧縮長prefix込みのAdler-32を生成する。画像・text・vector・animationの安全な既存構造編集も提供するが、任意の新規objectを生成する一般的なencoderではない。詳細は[書き込みガイド](writing.md)を参照する。
 
 `CmcFile::open(path, limits)` は、`.clip` の `CSFCHUNK` 内部DBとは別のstandalone SQLiteである `.cmc` を読み取る。Projectが1行であること、CanvasNodeの正の一意ID、全child/sibling/selected参照、循環、複数親、rootからの到達性を検証する。`CmcFile::from_reader` も利用できるが、元ディレクトリがないため `page_path` は返さない。未知の `LinkPath` は保持し、観測済み `.:name` 形式かつディレクトリ区切りや親移動を含まない場合だけページファイル名・パスへ解決する。
 
@@ -44,7 +68,7 @@
 
 `Database::ruler_layer(layer_id, limits)` は、`Layer.RulerVectorIndex` の所有layer・canvas、または `SpecialRulerManager` と各 `First*` / `NextIndex` chainを検証する。parallel、curve parallel、multiple curve、radial line、radial curve、concentric circle、guide、perspective、symmetryの9テーブルを型付きで返す。curve `PointData` はbig-endian header・件数・有限な座標・末尾境界を検証し、透視定規は消失点chainと `GuideNumber × GuideDataSize` を照合する。ベクター定規の線本体は既存の不透明なvector data APIから取得する。
 
-`Database::text_layer(layer_id, limits)` は、`TextLayerString` をUTF-8として検証し、対応する `TextLayerAttributes` と組にして返す。追加オブジェクトの配列は、4-byte little-endian長と本体の繰り返しとして境界を検証する。文字列と属性の件数一致を必須とし、総バイト数を `Limits::max_text_bytes`、オブジェクト数を `Limits::max_text_objects` で制限する。属性、追加属性、version値は意味を決め付けず元の値を保持する。
+`Database::text_layer(layer_id, limits)` は、`TextLayerString` をUTF-8として検証し、対応する `TextLayerAttributes` と組にして返す。追加オブジェクトの配列は、4-byte little-endian長と本体の繰り返しとして境界を検証する。文字列と属性の件数一致を必須とし、総バイト数を `Limits::max_text_bytes`、オブジェクト数を `Limits::max_text_objects` で制限する。属性、`TextLayerAddAttributesV01` の元配列、version値は失わず保持する。write時のobject追加では、後者がprimaryも含む同形式の配列であることと各itemのparameter 50がmain属性のobject IDと一致することも検証する。
 
 `Database::correction_layer(layer_id, limits)` は、`Layer.FilterLayerInfo` のbig-endian kind・section長を検証する。確認済みkind 1～9を、明るさ・コントラスト、レベル補正、トーンカーブ、色相・彩度・明度、カラーバランス、階調反転、ポスタリゼーション、二値化、グラデーションマップとして返す。レベル値・曲線座標・色・不透明度のraw固定小数点word、元payload、未知kindのpayloadを保持し、1 payloadのバイト数とchannel・stop・point数を `Limits` で制限する。
 
@@ -70,6 +94,6 @@
 
 ## 前方互換性
 
-`LayerType` はビットフラグとして複数用途を表し、`LayerComposite` にも将来値が追加され得る。このため `LayerKind` と `BlendMode` は閉じたenumにせず、`raw()` で元の整数を必ず返す。`is_pixel()` などは、現在確認できたビットだけを判定する補助APIである。
+`LayerType` はビットフラグとして複数用途を表し、`LayerComposite` にも将来値が追加され得る。このため `LayerKind` と `BlendMode` は閉じたenumにせず、`raw()` で元の整数を必ず返す。`BlendMode::known_name()` は未知値を明示するため `Option` を返す。`is_pixel()` などは、現在確認できたビットだけを判定する補助APIである。
 
 ベクターは外部本体への安全な到達、定規は表間参照と特殊定規parameterまで対応したが、ベクター線本体・制御点・ブラシ属性はまだ解釈しない。テキストは本文と属性レコードの境界まで対応したが、フォント・段落・変形属性は未解釈である。補正レイヤーは9種の属性parameter、2Dカメラはlayer snapshot・現在値・軸付きcurveまで対応した。タイムラプスはfull key frameとdelta patchを含む内部WebP frame索引まで対応したが、`GMIK` 側parameterは未解釈である。タイムラプスの実時間はファイルに存在しないため復元対象にしない。3Dの詳細BLOBも同様に未解釈である。これらは元のDBへ `Database::connection()` で読み取りアクセスできるが、安定した意味モデルとしては、最小差分コーパスで検証後に追加する。

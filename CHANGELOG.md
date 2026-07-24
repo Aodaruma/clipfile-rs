@@ -7,6 +7,24 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- Typed constants and stable names for all 29 observed layer blend modes,
+  while retaining lossless raw-value construction for future modes.
+- Conservative write APIs for per-character-width-preserving text content,
+  atomic text-object template cloning with fresh document-wide IDs, validated
+  vector translation and opaque bodies, typed animation values, existing
+  curve keys, and cel tags.
+- CSP-compatible `BlockCheckSum` generation using Adler-32 over the
+  little-endian compressed-size prefix and zlib payload, while retaining the
+  explicit zero-checksum compatibility mode.
+- Safe staging of new external objects before SQLite, including generated
+  index rows, repaired offsets, duplicate and limit checks, rollback helpers,
+  and strict reopened-output validation.
+- Conservative animation Track cloning with regenerated row/track/external
+  identities, independent primary and secondary mixer bodies, complete
+  unknown-column preservation, and validated timeline-chain insertion.
+
 ## [0.4.0] - 2026-07-24
 
 ### Added

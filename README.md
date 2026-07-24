@@ -43,14 +43,15 @@ Implemented:
 - optional `Offscreen.Attribute`, zlib tile, and RGBA/grayscale raster decoding;
   and
 - opt-in validated container rewriting with editable SQLite metadata,
-  byte-preserving external bodies, and repaired absolute offsets.
+  byte-preserving external bodies, repaired absolute offsets, CSP-compatible
+  block checksums, and conservative image/vector/text/animation edits.
 
 Not implemented yet:
 
 - semantic vector/text-attribute decoding, 3D data, or time-lapse
   playback/timestamp semantics; and
-- high-level encoders for raster, vector, text, animation, and other external
-  object bodies.
+- arbitrary object creation and full-fidelity style/stroke/track encoders for
+  raster, vector, text, animation, and other external object bodies.
 
 See [the format analysis](docs/format-analysis.md) and
 [the implementation plan](docs/implementation-plan.md) for the research status
@@ -204,18 +205,21 @@ Unknown and bit-packed layouts return an explicit unsupported-format error.
 The opt-in `write` feature provides `ClipFile::writer`. It clones the embedded
 SQLite database into writable memory, preserves unchanged external bodies,
 repairs `ExternalChunk.Offset` and the `CHNKHead` database offset, and can
-replace a complete opaque external body. For an existing block-data object,
-`replace_block_bytes` can also zlib-reencode one validated native tile while
-preserving the other blocks and metadata. Because the checksum algorithm is
-unknown, this narrower API requires explicit opt-in to the locally verified
-zero-checksum compatibility mode. `write_to_path` creates a new path, flushes
-it, then reopens and validates the container, SQLite database, and external
-index. It never overwrites an existing path.
+replace a complete opaque external body. Existing block data can be
+zlib-reencoded with CSP-compatible Adler-32 checksums. With the corresponding
+features enabled, higher-level methods replace an existing raster or layer
+mask, edit text while preserving encoded character boundaries, translate a
+validated vector layout, update existing animation values, keys, and cel tags,
+and clone a complete existing Track into an untracked compatible layer with
+independent identities and mixer bodies. `write_to_path` creates a new path,
+flushes it, then reopens and validates the container, SQLite database, and
+external index. It never overwrites an existing path.
 
-This is a conservative low-level writer, not a general semantic image or
-animation encoder. Unknown top-level chunk layouts are rejected, and callers
-replacing an external body must also make any related SQLite size or metadata
-changes. See [the writing guide](docs/writing.md) for the API and current
+This remains a conservative existing-structure editor, not an arbitrary CLIP
+document generator. Unknown top-level chunk layouts are rejected, and complete
+style, vector-stroke, and template-free animation-track creation are not
+implemented. See
+[the writing guide](docs/writing.md) for the precise API boundaries and current
 guarantees.
 
 Treat all input as untrusted; the parser and writer validate structural bounds,

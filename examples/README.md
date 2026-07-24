@@ -19,6 +19,13 @@
 | [`inspect_timelapse.rs`](inspect_timelapse.rs) | `timelapse` | manager/record/blob chainと内部frame indexをstream検証 | なし |
 | [`rewrite.rs`](rewrite.rs) | `write` | 編集なしのvalidated container rewriteを行う | 新規CLIP |
 | [`invert_first_tile.rs`](invert_first_tile.rs) | `write,raster` | native raster tileを1件変更し再圧縮する | 新規CLIP |
+| [`invert_raster.rs`](invert_raster.rs) | `write,raster` | レイヤー画像全体をRGBA8で編集する | 新規CLIP |
+| [`edit_text.rs`](edit_text.rs) | `write` | 既存text objectを文字ごとの符号化幅を保って置換する | 新規CLIP |
+| [`add_text_object.rs`](add_text_object.rs) | `write` | 既存属性templateからtext objectを追加する | 新規CLIP |
+| [`edit_vector_body.rs`](edit_vector_body.rs) | `write` | 検証済みvector参照のopaque body全体を置換する | 新規CLIP |
+| [`translate_vector.rs`](translate_vector.rs) | `write` | 対応済みvector strokeの全pointを平行移動する | 新規CLIP |
+| [`edit_animation_cel.rs`](edit_animation_cel.rs) | `write,animation` | 既存cel keyのTagを同期更新する | 新規CLIP |
+| [`clone_animation_track.rs`](clone_animation_track.rs) | `write,animation` | 既存Trackを未追跡layerへ完全複製する | 新規CLIP |
 
 `layer-id` と `canvas-id` は [`inspect_document`](inspect_document.rs) で確認できる。
 
@@ -109,13 +116,51 @@ cargo run --features timelapse --example inspect_timelapse -- input.clip
 cargo run --features write --example rewrite -- input.clip new-output.clip
 ```
 
-`invert_first_tile` は、読み取りAPIで1つの実在tileを選び、native byteを変更して `replace_block_bytes` へ渡す例である。色編集の例ではないためalphaを含む全native byteを反転する。再圧縮時の `BlockCheckSum` は未解明であり、`BlockChecksumMode::Zero` を明示する。複数アプリ版での互換性は保証していない。
+`invert_first_tile` は、読み取りAPIで1つの実在tileを選び、native byteを変更して `replace_block_bytes` へ渡す例である。色編集の例ではないためalphaを含む全native byteを反転する。再圧縮時は `BlockChecksumMode::CspCompatible` で、圧縮長prefixとzlib payloadからCSP互換チェックサムを生成する。
 
 ```console
 cargo run --features "write,raster" --example invert_first_tile -- input.clip new-output.clip 42
 ```
 
-どちらのwrite exampleも入力ファイルと既存出力を変更しない。
+text本文はopaque属性内のrun位置を壊さないよう、対応する各文字のUTF-8 byte幅とUTF-16 code unit幅を維持する。
+
+```console
+cargo run --features write --example edit_text -- input.clip new-output.clip 42 0 Hello
+```
+
+`add_text_object` はtemplateのmain/additional style/layout byteを複製し、両方のparameter 50へ文書内で一意な同じ新IDを割り当てる。文字列・属性・primaryを含む追加属性の3配列は一度に同期される。本文はtemplateと文字ごとのUTF-8/UTF-16幅が一致する必要があり、geometryも複製されるため初期位置は重なりうる。
+
+```console
+cargo run --features write --example add_text_object -- input.clip new-output.clip 42 0 World
+```
+
+vector内部のstroke serializerは未確定であるため、`edit_vector_body` は既存row IDを検証し、別途用意した完全なopaque bodyだけを差し替える。
+
+```console
+cargo run --features write --example edit_vector_body -- input.clip new-output.clip 42 7 vector-body.bin
+```
+
+検証済み92-byte stroke header / 88-byte point layoutでは、未知fieldを保持したまま位置とbounding boxを平行移動できる。別layoutは変更せず拒否する。
+
+```console
+cargo run --features write --example translate_vector -- input.clip new-output.clip 42 7 10 -5
+```
+
+既存cel keyのTagはprimary/secondary curveと、同じ旧Tagを指す現在値を同期して置換する。
+
+```console
+cargo run --features "write,animation" --example edit_animation_cel -- input.clip new-output.clip 7 0 B
+```
+
+既存Trackをテンプレートとして、互換性のある未追跡layerへ複製する。`MainId`、`TrackUuid`、primary/secondary mixerのexternal IDは新規生成され、対象timelineの末尾へ連結される。
+
+`TrackKind`とlayer種別の意味的互換性は自動判定できない。同じ用途・同じ種類の元layerを持つTrackだけをテンプレートに選び、無関係なkind同士を組み合わせないこと。
+
+```console
+cargo run --features "write,animation" --example clone_animation_track -- input.clip new-output.clip 7 1 42
+```
+
+write exampleはいずれも入力ファイルと既存出力を変更しない。
 
 ## API coverage
 
@@ -125,8 +170,8 @@ cargo run --features "write,raster" --example invert_first_tile -- input.clip ne
 - SQLite schema / external index: `inspect --database`
 - project / canvas / layer / tree / preview: `inspect_document`, `export_preview`
 - CMC / correction / ruler / text / vector: 対応する `inspect_*`
-- raster assembly / native tile: `export_raster`, `invert_first_tile`
-- animation / time-lapse: `inspect_animation`, `inspect_timelapse`
-- validated rewrite / BlockData再圧縮: `rewrite`, `invert_first_tile`
+- raster assembly / native tile / layer image write: `export_raster`, `invert_first_tile`, `invert_raster`
+- animation / time-lapse: `inspect_animation`, `edit_animation_cel`, `clone_animation_track`, `inspect_timelapse`
+- validated rewrite / text / vector: `rewrite`, `edit_text`, `add_text_object`, `edit_vector_body`, `translate_vector`
 
-未知形式を推測して生成するsemantic encoderはまだ提供していない。各exampleも公開APIが保証する境界を越えず、raw値や不透明byteを勝手に解釈しない。
+各exampleは公開APIが保証する境界を越えず、未解明のstyle、vector stroke、time-lapse、3Dデータを推測して生成しない。
