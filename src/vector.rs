@@ -1,8 +1,12 @@
 use std::io::{Read, Seek};
 
+#[cfg(feature = "write")]
+use rusqlite::OptionalExtension;
 use rusqlite::{params, types::ValueRef};
 
 use crate::{ClipFile, Database, Error, Limits, Result};
+#[cfg(feature = "write")]
+use crate::{ClipWriter, DatabaseSchema};
 
 /// One `VectorObjectList` row and its opaque external-object identifier.
 ///
@@ -14,6 +18,43 @@ pub struct VectorDataSource {
     canvas_id: i64,
     layer_id: i64,
     external_identifier: Box<[u8]>,
+}
+
+/// Result of translating every point in an existing supported vector body.
+#[cfg(feature = "write")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VectorTranslationSummary {
+    strokes: u32,
+    points: u32,
+    delta_x: i32,
+    delta_y: i32,
+}
+
+#[cfg(feature = "write")]
+impl VectorTranslationSummary {
+    /// Number of validated stroke records.
+    #[must_use]
+    pub const fn strokes(self) -> u32 {
+        self.strokes
+    }
+
+    /// Number of translated points.
+    #[must_use]
+    pub const fn points(self) -> u32 {
+        self.points
+    }
+
+    /// Horizontal translation in canvas units.
+    #[must_use]
+    pub const fn delta_x(self) -> i32 {
+        self.delta_x
+    }
+
+    /// Vertical translation in canvas units.
+    #[must_use]
+    pub const fn delta_y(self) -> i32 {
+        self.delta_y
+    }
 }
 
 impl VectorDataSource {
@@ -112,6 +153,293 @@ impl<R: Read + Seek> ClipFile<R> {
     }
 }
 
+#[cfg(feature = "write")]
+impl<R: Read + Seek> ClipWriter<'_, R> {
+    /// Replaces the complete opaque body referenced by a validated vector row.
+    ///
+    /// The `VectorObjectList` row and external identifier must still match the
+    /// supplied [`VectorDataSource`]. The body format is not interpreted, so
+    /// this is intentionally an opaque boundary rather than a stroke encoder.
+    /// Container offsets are repaired by [`Self::write_to`](ClipWriter::write_to).
+    pub fn replace_vector_data_body(
+        &mut self,
+        source: &VectorDataSource,
+        body: impl Into<Vec<u8>>,
+        limits: Limits,
+    ) -> Result<Option<Vec<u8>>> {
+        validate_vector_source(
+            self.database().connection(),
+            self.database().schema(),
+            source,
+        )?;
+        let body = body.into();
+        if body.len() as u64 > limits.max_vector_data_bytes() {
+            return Err(Error::LimitExceeded {
+                resource: "replacement vector data bytes",
+                value: body.len() as u64,
+                limit: limits.max_vector_data_bytes(),
+            });
+        }
+        self.source_external_object(source.external_identifier())?;
+        self.replace_external_body(source.external_identifier(), body)
+    }
+
+    /// Translates every point and bounding box in an existing vector body.
+    ///
+    /// This semantic edit is intentionally limited to the strictly validated
+    /// 92-byte stroke header and 88-byte point layout observed in current
+    /// generated documents. Unsupported layouts are rejected without
+    /// installing a replacement, while brush, pressure, opacity, flags, and
+    /// all unknown bytes are preserved exactly.
+    pub fn translate_vector_data(
+        &mut self,
+        source: &VectorDataSource,
+        delta_x: i32,
+        delta_y: i32,
+        limits: Limits,
+    ) -> Result<VectorTranslationSummary> {
+        validate_vector_source(
+            self.database().connection(),
+            self.database().schema(),
+            source,
+        )?;
+        let body = self.external_body_for_update(
+            source.external_identifier(),
+            limits.max_vector_data_bytes(),
+        )?;
+        if body.len() as u64 > limits.max_vector_data_bytes() {
+            return Err(Error::LimitExceeded {
+                resource: "vector data bytes",
+                value: body.len() as u64,
+                limit: limits.max_vector_data_bytes(),
+            });
+        }
+        let (translated, summary) = translate_supported_vector_body(&body, delta_x, delta_y)?;
+        if translated != body {
+            self.replace_external_body(source.external_identifier(), translated)?;
+        }
+        Ok(summary)
+    }
+}
+
+#[cfg(feature = "write")]
+fn translate_supported_vector_body(
+    body: &[u8],
+    delta_x: i32,
+    delta_y: i32,
+) -> Result<(Vec<u8>, VectorTranslationSummary)> {
+    const HEADER_SIZE: usize = 92;
+    const POINT_SIZE: usize = 88;
+    const POINT_SECTION_SIZE: u32 = 76;
+
+    let mut output = body.to_vec();
+    let mut offset = 0_usize;
+    let mut strokes = 0_u32;
+    let mut points = 0_u32;
+    while offset < body.len() {
+        let header_size = read_vector_u32(body, offset)?;
+        let point_section_size = read_vector_u32(body, offset + 4)?;
+        let point_size = read_vector_u32(body, offset + 8)?;
+        let default_point_size = read_vector_u32(body, offset + 12)?;
+        if header_size != HEADER_SIZE as u32
+            || point_section_size != POINT_SECTION_SIZE
+            || point_size != POINT_SIZE as u32
+            || default_point_size != POINT_SIZE as u32
+        {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "unsupported vector layout at byte {offset}: header={header_size}, point-section={point_section_size}, point={point_size}, default-point={default_point_size}"
+                ),
+            });
+        }
+        let point_count = read_vector_u32(body, offset + 16)?;
+        let points_size = usize::try_from(point_count)
+            .map_err(|_| Error::OffsetOverflow)?
+            .checked_mul(POINT_SIZE)
+            .ok_or(Error::OffsetOverflow)?;
+        let record_end = offset
+            .checked_add(HEADER_SIZE)
+            .and_then(|value| value.checked_add(points_size))
+            .ok_or(Error::OffsetOverflow)?;
+        if record_end > body.len() {
+            return Err(Error::InvalidWrite {
+                reason: format!("vector stroke at byte {offset} exceeds its external body"),
+            });
+        }
+
+        translate_vector_bbox(&mut output, offset + 24, delta_x, delta_y)?;
+        for point_index in 0..point_count {
+            let point_offset = offset
+                .checked_add(HEADER_SIZE)
+                .and_then(|value| {
+                    value.checked_add(usize::try_from(point_index).ok()?.checked_mul(POINT_SIZE)?)
+                })
+                .ok_or(Error::OffsetOverflow)?;
+            translate_vector_f64(&mut output, point_offset, f64::from(delta_x))?;
+            translate_vector_f64(&mut output, point_offset + 8, f64::from(delta_y))?;
+            translate_vector_bbox(&mut output, point_offset + 16, delta_x, delta_y)?;
+        }
+        points = points
+            .checked_add(point_count)
+            .ok_or(Error::OffsetOverflow)?;
+        strokes = strokes.checked_add(1).ok_or(Error::OffsetOverflow)?;
+        offset = record_end;
+    }
+    if strokes == 0 {
+        return Err(Error::InvalidWrite {
+            reason: "vector body contains no supported stroke records".to_owned(),
+        });
+    }
+    Ok((
+        output,
+        VectorTranslationSummary {
+            strokes,
+            points,
+            delta_x,
+            delta_y,
+        },
+    ))
+}
+
+#[cfg(feature = "write")]
+fn read_vector_u32(bytes: &[u8], offset: usize) -> Result<u32> {
+    let value = bytes
+        .get(offset..offset.checked_add(4).ok_or(Error::OffsetOverflow)?)
+        .ok_or_else(|| Error::InvalidWrite {
+            reason: format!("vector record is truncated at byte {offset}"),
+        })?;
+    Ok(u32::from_be_bytes(
+        value.try_into().expect("four-byte slice"),
+    ))
+}
+
+#[cfg(feature = "write")]
+fn translate_vector_f64(bytes: &mut [u8], offset: usize, delta: f64) -> Result<()> {
+    let end = offset.checked_add(8).ok_or(Error::OffsetOverflow)?;
+    let value = bytes.get(offset..end).ok_or_else(|| Error::InvalidWrite {
+        reason: format!("vector coordinate is truncated at byte {offset}"),
+    })?;
+    let original = f64::from_be_bytes(value.try_into().expect("eight-byte slice"));
+    let replacement = original + delta;
+    if !original.is_finite() || !replacement.is_finite() {
+        return Err(Error::InvalidWrite {
+            reason: format!("vector coordinate at byte {offset} is not finite"),
+        });
+    }
+    bytes[offset..end].copy_from_slice(&replacement.to_be_bytes());
+    Ok(())
+}
+
+#[cfg(feature = "write")]
+fn translate_vector_bbox(
+    bytes: &mut [u8],
+    offset: usize,
+    delta_x: i32,
+    delta_y: i32,
+) -> Result<()> {
+    for (index, delta) in [delta_x, delta_y, delta_x, delta_y].into_iter().enumerate() {
+        let value_offset = offset
+            .checked_add(index.checked_mul(4).ok_or(Error::OffsetOverflow)?)
+            .ok_or(Error::OffsetOverflow)?;
+        let original = i32::from_be_bytes(
+            bytes
+                .get(value_offset..value_offset + 4)
+                .ok_or_else(|| Error::InvalidWrite {
+                    reason: format!("vector bounding box is truncated at byte {value_offset}"),
+                })?
+                .try_into()
+                .expect("four-byte slice"),
+        );
+        let replacement = original
+            .checked_add(delta)
+            .ok_or_else(|| Error::InvalidWrite {
+                reason: "vector bounding-box translation overflows i32".to_owned(),
+            })?;
+        bytes[value_offset..value_offset + 4].copy_from_slice(&replacement.to_be_bytes());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "write")]
+fn validate_vector_source(
+    connection: &rusqlite::Connection,
+    schema: &DatabaseSchema,
+    source: &VectorDataSource,
+) -> Result<()> {
+    for column in ["MainId", "CanvasId", "LayerId", "VectorData"] {
+        if !schema.has_column("VectorObjectList", column) {
+            return Err(Error::InvalidWrite {
+                reason: format!("VectorObjectList.{column} is required to edit vector data"),
+            });
+        }
+    }
+    let row_count: i64 = connection.query_row(
+        "SELECT count(*) FROM VectorObjectList WHERE MainId = ?1",
+        params![source.id()],
+        |row| row.get(0),
+    )?;
+    if row_count != 1 {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "expected one vector row with ID {}, found {row_count}",
+                source.id()
+            ),
+        });
+    }
+    let stored = connection
+        .query_row(
+            "SELECT CanvasId, LayerId, VectorData FROM VectorObjectList \
+             WHERE MainId = ?1 LIMIT 1",
+            params![source.id()],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    match row.get_ref(2)? {
+                        ValueRef::Blob(bytes) | ValueRef::Text(bytes) => bytes.to_vec(),
+                        value => {
+                            return Err(rusqlite::Error::InvalidColumnType(
+                                2,
+                                "VectorData".to_owned(),
+                                value.data_type(),
+                            ));
+                        }
+                    },
+                ))
+            },
+        )
+        .optional()?;
+    let Some((canvas_id, layer_id, identifier)) = stored else {
+        return Err(Error::InvalidWrite {
+            reason: format!("vector row {} does not exist", source.id()),
+        });
+    };
+    if canvas_id != source.canvas_id()
+        || layer_id != source.layer_id()
+        || identifier != source.external_identifier()
+    {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "vector row {} changed after VectorDataSource was read",
+                source.id()
+            ),
+        });
+    }
+    let alias_count: i64 = connection.query_row(
+        "SELECT count(*) FROM VectorObjectList WHERE CAST(VectorData AS BLOB) = ?1",
+        params![&identifier],
+        |row| row.get(0),
+    )?;
+    if alias_count != 1 {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "vector external identifier is shared by {alias_count} VectorObjectList rows"
+            ),
+        });
+    }
+    Ok(())
+}
+
 fn value_bytes(value: ValueRef<'_>, column: usize, name: &str, limit: u64) -> Result<Box<[u8]>> {
     let bytes = match value {
         ValueRef::Blob(bytes) | ValueRef::Text(bytes) => bytes,
@@ -140,6 +468,8 @@ mod tests {
     use std::io::Cursor;
 
     use rusqlite::Connection;
+    #[cfg(feature = "write")]
+    use rusqlite::MAIN_DB;
 
     use super::*;
 
@@ -214,6 +544,94 @@ mod tests {
         Database::from_connection(connection).unwrap()
     }
 
+    #[cfg(feature = "write")]
+    fn writable_sample(body: &[u8]) -> Vec<u8> {
+        let external_offset = 24 + 16 + 40;
+        let external_chunk_size = 16 + 16 + IDENTIFIER.len() as u64 + body.len() as u64;
+        let database_offset = external_offset + external_chunk_size;
+
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE VectorObjectList (
+                    MainId INTEGER, CanvasId INTEGER, LayerId INTEGER,
+                    VectorData BLOB
+                 );
+                 CREATE TABLE ExternalChunk (ExternalID BLOB, Offset INTEGER);",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO VectorObjectList VALUES (1, 2, 3, ?1)",
+                params![IDENTIFIER],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO ExternalChunk VALUES (?1, ?2)",
+                params![IDENTIFIER, external_offset as i64],
+            )
+            .unwrap();
+        let database = connection.serialize(MAIN_DB).unwrap().to_vec();
+
+        let mut header = Vec::new();
+        push_u64(&mut header, 256);
+        push_u64(&mut header, database_offset);
+        push_u64(&mut header, 16);
+        header.extend_from_slice(&[0x42; 16]);
+        let mut external = Vec::new();
+        push_u64(&mut external, IDENTIFIER.len() as u64);
+        external.extend_from_slice(IDENTIFIER);
+        push_u64(&mut external, body.len() as u64);
+        external.extend_from_slice(body);
+
+        let mut bytes = Vec::from(b"CSFCHUNK".as_slice());
+        push_u64(&mut bytes, 0);
+        push_u64(&mut bytes, 24);
+        assert_eq!(push_chunk(&mut bytes, b"CHNKHead", &header), 24);
+        assert_eq!(
+            push_chunk(&mut bytes, b"CHNKExta", &external),
+            external_offset
+        );
+        assert_eq!(
+            push_chunk(&mut bytes, b"CHNKSQLi", &database),
+            database_offset
+        );
+        push_chunk(&mut bytes, b"CHNKFoot", b"");
+        let file_size = bytes.len() as u64;
+        bytes[8..16].copy_from_slice(&file_size.to_be_bytes());
+        bytes
+    }
+
+    #[cfg(feature = "write")]
+    fn supported_vector_body() -> Vec<u8> {
+        let mut body = vec![0_u8; 92 + 2 * 88];
+        for (offset, value) in [(0, 92_u32), (4, 76), (8, 88), (12, 88), (16, 2)] {
+            body[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+        }
+        body[20..24].copy_from_slice(&0x2081_u32.to_be_bytes());
+        for (index, value) in [5_i32, 148, 76, 197].into_iter().enumerate() {
+            let offset = 24 + index * 4;
+            body[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+        }
+        for (point, (x, y, bbox)) in [
+            (10.0_f64, 152.5_f64, [5_i32, 148, 76, 197]),
+            (70.0_f64, 191.0_f64, [65_i32, 186, 75, 196]),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let offset = 92 + point * 88;
+            body[offset..offset + 8].copy_from_slice(&x.to_be_bytes());
+            body[offset + 8..offset + 16].copy_from_slice(&y.to_be_bytes());
+            for (index, value) in bbox.into_iter().enumerate() {
+                let bbox_offset = offset + 16 + index * 4;
+                body[bbox_offset..bbox_offset + 4].copy_from_slice(&value.to_be_bytes());
+            }
+        }
+        body
+    }
+
     #[test]
     fn resolves_and_reads_raw_vector_data() {
         let body = b"opaque vector body";
@@ -269,5 +687,149 @@ mod tests {
             ),
             Err(Error::PayloadTooLarge { size: 4, limit: 3 })
         ));
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn replaces_a_validated_vector_body_and_reads_it_back() {
+        let mut clip = ClipFile::open(Cursor::new(writable_sample(b"old vector"))).unwrap();
+        let database = clip.open_database().unwrap();
+        let source = database
+            .vector_data_sources(3, Limits::default())
+            .unwrap()
+            .remove(0);
+        let mut writer = clip.writer().unwrap();
+        assert!(
+            writer
+                .replace_vector_data_body(&source, b"new opaque vector".to_vec(), Limits::default())
+                .unwrap()
+                .is_none()
+        );
+
+        let mut output = Vec::new();
+        writer.write_to(&mut output).unwrap();
+        let mut rewritten = ClipFile::open(Cursor::new(output)).unwrap();
+        let database = rewritten.open_database().unwrap();
+        rewritten.validate_external_index(&database).unwrap();
+        let source = database
+            .vector_data_sources(3, Limits::default())
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            rewritten
+                .read_vector_data(&database, &source, Limits::default())
+                .unwrap(),
+            b"new opaque vector"
+        );
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn writes_a_vector_identifier_stored_with_the_text_storage_class() {
+        let mut clip = ClipFile::open(Cursor::new(writable_sample(b"old vector"))).unwrap();
+        let database = clip.open_database().unwrap();
+        let source = database
+            .vector_data_sources(3, Limits::default())
+            .unwrap()
+            .remove(0);
+        let mut writer = clip.writer().unwrap();
+        writer
+            .database()
+            .connection()
+            .execute(
+                "UPDATE VectorObjectList \
+                 SET VectorData = CAST(VectorData AS TEXT) WHERE MainId = 1",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            writer
+                .database()
+                .connection()
+                .query_row(
+                    "SELECT typeof(VectorData) FROM VectorObjectList WHERE MainId = 1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "text"
+        );
+
+        assert!(
+            writer
+                .replace_vector_data_body(
+                    &source,
+                    b"new opaque vector".to_vec(),
+                    Limits::default(),
+                )
+                .is_ok()
+        );
+        assert_eq!(writer.replacement_count(), 1);
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn rejects_a_vector_identifier_shared_by_multiple_rows() {
+        let mut clip = ClipFile::open(Cursor::new(writable_sample(b"old vector"))).unwrap();
+        let database = clip.open_database().unwrap();
+        let source = database
+            .vector_data_sources(3, Limits::default())
+            .unwrap()
+            .remove(0);
+        let mut writer = clip.writer().unwrap();
+        writer
+            .database()
+            .connection()
+            .execute(
+                "INSERT INTO VectorObjectList VALUES (2, 2, 3, ?1)",
+                params![IDENTIFIER],
+            )
+            .unwrap();
+
+        assert!(matches!(
+            writer.replace_vector_data_body(
+                &source,
+                b"new opaque vector".to_vec(),
+                Limits::default()
+            ),
+            Err(Error::InvalidWrite { .. })
+        ));
+        assert_eq!(writer.replacement_count(), 0);
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn translates_supported_vector_points_and_bounding_boxes() {
+        let body = supported_vector_body();
+        let (translated, summary) = translate_supported_vector_body(&body, 3, -4).unwrap();
+        assert_eq!(summary.strokes(), 1);
+        assert_eq!(summary.points(), 2);
+        assert_eq!(summary.delta_x(), 3);
+        assert_eq!(summary.delta_y(), -4);
+        assert_eq!(
+            f64::from_be_bytes(translated[92..100].try_into().unwrap()),
+            13.0
+        );
+        assert_eq!(
+            f64::from_be_bytes(translated[100..108].try_into().unwrap()),
+            148.5
+        );
+        assert_eq!(
+            i32::from_be_bytes(translated[24..28].try_into().unwrap()),
+            8
+        );
+        assert_eq!(
+            i32::from_be_bytes(translated[28..32].try_into().unwrap()),
+            144
+        );
+        for index in 0..body.len() {
+            let is_coordinate = matches!(
+                index,
+                24..=39 | 92..=123 | 180..=211
+            );
+            if !is_coordinate {
+                assert_eq!(translated[index], body[index], "byte {index} changed");
+            }
+        }
     }
 }

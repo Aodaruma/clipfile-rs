@@ -315,6 +315,221 @@ impl RasterImage {
     }
 }
 
+#[cfg(all(feature = "write", feature = "raster"))]
+pub(crate) struct RasterEncoder<'a> {
+    attributes: &'a OffscreenAttributes,
+    format: PixelFormat,
+    pixels: &'a [u8],
+    tile_bytes: usize,
+    tile_count: u32,
+}
+
+#[cfg(all(feature = "write", feature = "raster"))]
+impl<'a> RasterEncoder<'a> {
+    pub(crate) fn new(
+        attributes: &'a OffscreenAttributes,
+        format: PixelFormat,
+        pixels: &'a [u8],
+        dimension_limit: u32,
+        raster_limit: u64,
+        tile_limit: u64,
+    ) -> Result<Self> {
+        validate_dimensions(attributes, dimension_limit)?;
+        let expected_format = pixel_format(attributes.packing())?;
+        if format != expected_format {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "replacement pixel format {format:?} does not match raster format {expected_format:?}"
+                ),
+            });
+        }
+        let expected_pixels = u64::from(attributes.bitmap_width())
+            .checked_mul(u64::from(attributes.bitmap_height()))
+            .and_then(|value| value.checked_mul(format.bytes_per_pixel()))
+            .ok_or(Error::OffsetOverflow)?;
+        if expected_pixels > raster_limit {
+            return Err(Error::LimitExceeded {
+                resource: "replacement raster bytes",
+                value: expected_pixels,
+                limit: raster_limit,
+            });
+        }
+        if pixels.len() as u64 != expected_pixels {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "replacement raster has {} bytes, expected {expected_pixels}",
+                    pixels.len()
+                ),
+            });
+        }
+        let packing = attributes.packing();
+        let tile_bytes = u64::from(packing.total_channels())
+            .checked_mul(u64::from(packing.block_width()))
+            .and_then(|value| value.checked_mul(u64::from(packing.block_height())))
+            .ok_or(Error::OffsetOverflow)?;
+        if tile_bytes > tile_limit {
+            return Err(Error::LimitExceeded {
+                resource: "replacement raster tile bytes",
+                value: tile_bytes,
+                limit: tile_limit,
+            });
+        }
+        let tile_count = attributes
+            .block_grid_width()
+            .checked_mul(attributes.block_grid_height())
+            .ok_or(Error::OffsetOverflow)?;
+        Ok(Self {
+            attributes,
+            format,
+            pixels,
+            tile_bytes: usize::try_from(tile_bytes).map_err(|_| Error::OffsetOverflow)?,
+            tile_count,
+        })
+    }
+
+    pub(crate) const fn tile_count(&self) -> u32 {
+        self.tile_count
+    }
+
+    pub(crate) fn default_tile(&self) -> Vec<u8> {
+        let fill = if self.attributes.default_fill() == 0 {
+            0
+        } else {
+            u8::MAX
+        };
+        let mut output = vec![fill; self.tile_bytes];
+        if self.format == PixelFormat::Rgba8 {
+            let tile_area = self.tile_bytes / self.attributes.packing().total_channels() as usize;
+            for pixel in output[tile_area..].chunks_exact_mut(4) {
+                // Native RGBA tiles use alpha + interleaved B/G/R/X. X is
+                // reserved padding, observed as zero in generated documents.
+                pixel[3] = 0;
+            }
+        }
+        output
+    }
+
+    pub(crate) fn encode_tile(
+        &self,
+        tile_index: u32,
+        original: Option<Vec<u8>>,
+    ) -> Result<Vec<u8>> {
+        if tile_index >= self.tile_count {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "replacement raster tile index {tile_index} is outside 0..{}",
+                    self.tile_count
+                ),
+            });
+        }
+        let mut output = match original {
+            Some(bytes) if bytes.len() == self.tile_bytes => bytes,
+            Some(bytes) => {
+                return Err(Error::InvalidWrite {
+                    reason: format!(
+                        "existing raster tile has {} decoded bytes, expected {}",
+                        bytes.len(),
+                        self.tile_bytes
+                    ),
+                });
+            }
+            None => self.default_tile(),
+        };
+        let packing = self.attributes.packing();
+        let tile_x = tile_index % self.attributes.block_grid_width();
+        let tile_y = tile_index / self.attributes.block_grid_width();
+        let origin_x = tile_x
+            .checked_mul(packing.block_width())
+            .ok_or(Error::OffsetOverflow)?;
+        let origin_y = tile_y
+            .checked_mul(packing.block_height())
+            .ok_or(Error::OffsetOverflow)?;
+        let copy_width = packing
+            .block_width()
+            .min(self.attributes.bitmap_width().saturating_sub(origin_x));
+        let copy_height = packing
+            .block_height()
+            .min(self.attributes.bitmap_height().saturating_sub(origin_y));
+        let tile_area = u64::from(packing.block_width())
+            .checked_mul(u64::from(packing.block_height()))
+            .ok_or(Error::OffsetOverflow)?;
+
+        for y in 0..copy_height {
+            for x in 0..copy_width {
+                let target_pixel = u64::from(origin_y + y)
+                    .checked_mul(u64::from(self.attributes.bitmap_width()))
+                    .and_then(|value| value.checked_add(u64::from(origin_x + x)))
+                    .ok_or(Error::OffsetOverflow)?;
+                let tile_pixel = u64::from(y)
+                    .checked_mul(u64::from(packing.block_width()))
+                    .and_then(|value| value.checked_add(u64::from(x)))
+                    .ok_or(Error::OffsetOverflow)?;
+                match self.format {
+                    PixelFormat::Rgba8 => {
+                        let source = usize::try_from(
+                            target_pixel.checked_mul(4).ok_or(Error::OffsetOverflow)?,
+                        )
+                        .map_err(|_| Error::OffsetOverflow)?;
+                        let alpha =
+                            usize::try_from(tile_pixel).map_err(|_| Error::OffsetOverflow)?;
+                        let buffer = usize::try_from(
+                            tile_area
+                                .checked_add(
+                                    tile_pixel.checked_mul(4).ok_or(Error::OffsetOverflow)?,
+                                )
+                                .ok_or(Error::OffsetOverflow)?,
+                        )
+                        .map_err(|_| Error::OffsetOverflow)?;
+                        output[alpha] = self.pixels[source + 3];
+                        output[buffer] = self.pixels[source + 2];
+                        output[buffer + 1] = self.pixels[source + 1];
+                        output[buffer + 2] = self.pixels[source];
+                    }
+                    PixelFormat::Gray8 => {
+                        let source =
+                            usize::try_from(target_pixel).map_err(|_| Error::OffsetOverflow)?;
+                        let target =
+                            usize::try_from(tile_pixel).map_err(|_| Error::OffsetOverflow)?;
+                        output[target] = self.pixels[source];
+                    }
+                }
+            }
+        }
+        Ok(output)
+    }
+}
+
+#[cfg(feature = "write")]
+pub(crate) fn replace_attribute_block_sizes(bytes: &[u8], block_sizes: &[u32]) -> Result<Vec<u8>> {
+    let attributes = OffscreenAttributes::parse(bytes)?;
+    if attributes.block_sizes().len() != block_sizes.len() {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "replacement BlockSize count {} does not match attribute count {}",
+                block_sizes.len(),
+                attributes.block_sizes().len()
+            ),
+        });
+    }
+    let values_size = block_sizes
+        .len()
+        .checked_mul(4)
+        .ok_or(Error::OffsetOverflow)?;
+    let values_start = bytes
+        .len()
+        .checked_sub(values_size)
+        .ok_or(Error::OffsetOverflow)?;
+    let mut output = bytes.to_vec();
+    for (index, value) in block_sizes.iter().enumerate() {
+        let offset = values_start
+            .checked_add(index.checked_mul(4).ok_or(Error::OffsetOverflow)?)
+            .ok_or(Error::OffsetOverflow)?;
+        output[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+    }
+    OffscreenAttributes::parse(&output)?;
+    Ok(output)
+}
+
 impl Database {
     /// Resolves a mipmap through `MipmapInfo` to its base `Offscreen` row.
     pub fn raster_source(&self, mipmap_id: i64) -> Result<Option<RasterSource>> {
@@ -1062,6 +1277,84 @@ mod tests {
         assert!(!RasterDataState::MissingReference.is_present());
         assert!(!RasterDataState::MissingExternalChunk.is_present());
         assert!(RasterDataState::Present.is_present());
+    }
+
+    #[cfg(all(feature = "write", feature = "raster"))]
+    #[test]
+    fn encodes_rgba_pixels_into_native_tiles_and_preserves_padding() {
+        let attributes = OffscreenAttributes::parse(&attributes()).unwrap();
+        let mut pixels = vec![0_u8; 300 * 200 * 4];
+        pixels[0..4].copy_from_slice(&[1, 2, 3, 4]);
+        let second_tile_pixel = (256 * 4) as usize;
+        pixels[second_tile_pixel..second_tile_pixel + 4].copy_from_slice(&[5, 6, 7, 8]);
+        let encoder = RasterEncoder::new(
+            &attributes,
+            PixelFormat::Rgba8,
+            &pixels,
+            4096,
+            1024 * 1024,
+            1024 * 1024,
+        )
+        .unwrap();
+        assert_eq!(encoder.tile_count(), 2);
+
+        let tile_area = 256 * 256;
+        let first = encoder
+            .encode_tile(0, Some(vec![0xAA; tile_area * 5]))
+            .unwrap();
+        assert_eq!(first[0], 4);
+        assert_eq!(&first[tile_area..tile_area + 4], &[3, 2, 1, 0xAA]);
+        assert_eq!(first[tile_area - 1], 0xAA);
+
+        let second = encoder.encode_tile(1, None).unwrap();
+        assert_eq!(second[0], 8);
+        assert_eq!(&second[tile_area..tile_area + 4], &[7, 6, 5, 0]);
+        assert_eq!(second[255], 0);
+        assert_eq!(second[tile_area + 255 * 4], 0);
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn replaces_only_attribute_block_size_values() {
+        let original = attributes();
+        let updated = replace_attribute_block_sizes(&original, &[1234, 5678]).unwrap();
+        assert_eq!(
+            OffscreenAttributes::parse(&updated).unwrap().block_sizes(),
+            &[1234, 5678]
+        );
+        let value_bytes = 2 * 4;
+        assert_eq!(
+            &updated[..updated.len() - value_bytes],
+            &original[..original.len() - value_bytes]
+        );
+    }
+
+    #[cfg(all(feature = "write", feature = "raster"))]
+    #[test]
+    fn rejects_a_raster_replacement_with_the_wrong_shape() {
+        let attributes = OffscreenAttributes::parse(&attributes()).unwrap();
+        assert!(matches!(
+            RasterEncoder::new(
+                &attributes,
+                PixelFormat::Gray8,
+                &[],
+                4096,
+                1024 * 1024,
+                1024 * 1024,
+            ),
+            Err(Error::InvalidWrite { .. })
+        ));
+        assert!(matches!(
+            RasterEncoder::new(
+                &attributes,
+                PixelFormat::Rgba8,
+                &[0; 4],
+                4096,
+                1024 * 1024,
+                1024 * 1024,
+            ),
+            Err(Error::InvalidWrite { .. })
+        ));
     }
 
     #[test]

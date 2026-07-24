@@ -77,6 +77,34 @@ required-features = ["write"]
 name = "invert_first_tile"
 required-features = ["write", "raster"]
 
+[[example]]
+name = "invert_raster"
+required-features = ["write", "raster"]
+
+[[example]]
+name = "edit_text"
+required-features = ["write"]
+
+[[example]]
+name = "add_text_object"
+required-features = ["write"]
+
+[[example]]
+name = "edit_vector_body"
+required-features = ["write"]
+
+[[example]]
+name = "translate_vector"
+required-features = ["write"]
+
+[[example]]
+name = "edit_animation_cel"
+required-features = ["write", "animation"]
+
+[[example]]
+name = "clone_animation_track"
+required-features = ["write", "animation"]
+
 [lints.rust]
 unsafe_code = "forbid"
 

@@ -1,3 +1,5 @@
+#[cfg(feature = "write")]
+use std::io::Write;
 use std::{
     collections::BTreeMap,
     io::{Read, Seek},
@@ -5,9 +7,15 @@ use std::{
 };
 
 use flate2::read::ZlibDecoder;
+#[cfg(feature = "write")]
+use flate2::{Compression, write::ZlibEncoder};
 use rusqlite::{OptionalExtension, params, types::ValueRef};
+#[cfg(feature = "write")]
+use rusqlite::{params_from_iter, types::Value};
 
 use crate::{ByteOrder, ClipFile, Database, Error, ExternalBody, Limits, Result};
+#[cfg(feature = "write")]
+use crate::{ClipWriter, DatabaseSchema, EditableDatabase};
 
 /// One timeline row with validated playback metadata.
 #[derive(Clone, Debug, PartialEq)]
@@ -234,6 +242,33 @@ impl AnimationCurveKeyframe {
     #[must_use]
     pub const fn revise_constant(&self) -> Option<u8> {
         self.revise_constant
+    }
+}
+
+/// Replacement numeric fields for one existing primary animation-curve key.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AnimationCurveKeyframeValues {
+    time_60hz: f32,
+    value: f32,
+}
+
+impl AnimationCurveKeyframeValues {
+    /// Creates a pair of replacement numeric values.
+    #[must_use]
+    pub const fn new(time_60hz: f32, value: f32) -> Self {
+        Self { time_60hz, value }
+    }
+
+    /// Replacement key time in the observed 60 Hz timebase.
+    #[must_use]
+    pub const fn time_60hz(self) -> f32 {
+        self.time_60hz
+    }
+
+    /// Replacement numeric curve value.
+    #[must_use]
+    pub const fn value(self) -> f32 {
+        self.value
     }
 }
 
@@ -731,6 +766,69 @@ pub struct Animation {
     animation_tracks: Vec<AnimationTrack>,
 }
 
+/// Result of cloning one animation track from an existing template.
+///
+/// The cloned row is appended to the requested timeline's track chain. Its
+/// SQLite row identity, `MainId`, `TrackUuid`, and mixer external identifiers
+/// are newly generated; unknown non-identity `Track` columns are copied from
+/// the template.
+#[cfg(feature = "write")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnimationTrackCloneSummary {
+    template_track_id: i64,
+    track_id: i64,
+    timeline_id: i64,
+    layer_id: i64,
+    track_uuid: [u8; 16],
+    primary_mixer_identifier: Option<Box<[u8]>>,
+    secondary_mixer_identifier: Option<Box<[u8]>>,
+}
+
+#[cfg(feature = "write")]
+impl AnimationTrackCloneSummary {
+    /// Template `Track.MainId`.
+    #[must_use]
+    pub const fn template_track_id(&self) -> i64 {
+        self.template_track_id
+    }
+
+    /// Newly allocated `Track.MainId`.
+    #[must_use]
+    pub const fn track_id(&self) -> i64 {
+        self.track_id
+    }
+
+    /// Target `TimeLine.MainId`.
+    #[must_use]
+    pub const fn timeline_id(&self) -> i64 {
+        self.timeline_id
+    }
+
+    /// Target `Layer.MainId`.
+    #[must_use]
+    pub const fn layer_id(&self) -> i64 {
+        self.layer_id
+    }
+
+    /// Newly generated RFC 4122 variant, version-4 `TrackUuid` bytes.
+    #[must_use]
+    pub const fn track_uuid(&self) -> [u8; 16] {
+        self.track_uuid
+    }
+
+    /// Newly allocated primary mixer external identifier, when present.
+    #[must_use]
+    pub fn primary_mixer_identifier(&self) -> Option<&[u8]> {
+        self.primary_mixer_identifier.as_deref()
+    }
+
+    /// Newly allocated secondary mixer external identifier, when present.
+    #[must_use]
+    pub fn secondary_mixer_identifier(&self) -> Option<&[u8]> {
+        self.secondary_mixer_identifier.as_deref()
+    }
+}
+
 impl Animation {
     /// Selected timeline.
     #[must_use]
@@ -965,6 +1063,210 @@ impl Database {
     }
 }
 
+#[cfg(feature = "write")]
+impl EditableDatabase {
+    /// Replaces one existing typed current/default value in `TrackValueMap`.
+    ///
+    /// The named entry must be unique and its value kind must remain
+    /// unchanged. Unknown value kinds are preserved while the map is rebuilt,
+    /// but cannot be selected as the replacement target.
+    pub fn replace_animation_track_value(
+        &self,
+        track_id: i64,
+        name: &str,
+        replacement: AnimationTrackValue,
+        limits: Limits,
+    ) -> Result<AnimationTrackValue> {
+        replace_animation_track_value(
+            self.connection(),
+            self.schema(),
+            track_id,
+            name,
+            replacement,
+            limits,
+        )
+    }
+}
+
+#[cfg(feature = "write")]
+fn replace_animation_track_value(
+    connection: &rusqlite::Connection,
+    schema: &DatabaseSchema,
+    track_id: i64,
+    name: &str,
+    replacement: AnimationTrackValue,
+    limits: Limits,
+) -> Result<AnimationTrackValue> {
+    for column in ["MainId", "TrackValueMap"] {
+        if !schema.has_column("Track", column) {
+            return Err(Error::InvalidWrite {
+                reason: format!("Track.{column} is required to edit animation values"),
+            });
+        }
+    }
+    let row_count: i64 = connection.query_row(
+        "SELECT count(*) FROM Track WHERE MainId = ?1",
+        params![track_id],
+        |row| row.get(0),
+    )?;
+    if row_count != 1 {
+        return Err(Error::InvalidWrite {
+            reason: format!("expected one animation track with ID {track_id}, found {row_count}"),
+        });
+    }
+    let bytes = connection
+        .query_row(
+            "SELECT TrackValueMap FROM Track WHERE MainId = ?1 LIMIT 1",
+            params![track_id],
+            |row| {
+                optional_bytes(row.get_ref(0)?, 0, "TrackValueMap")
+                    .map(|value| value.map(<[u8]>::to_vec))
+            },
+        )
+        .optional()?
+        .flatten()
+        .ok_or_else(|| Error::InvalidWrite {
+            reason: format!("animation track {track_id} has no TrackValueMap"),
+        })?;
+    let mut entries = parse_track_value_map(&bytes, limits)?;
+    let matching = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.name == name)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let [index] = matching.as_slice() else {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "animation track {track_id} has {} values named {name:?}, expected exactly one",
+                matching.len()
+            ),
+        });
+    };
+    validate_track_value_replacement(&entries[*index].value, &replacement)?;
+    let original = std::mem::replace(&mut entries[*index].value, replacement);
+    let encoded = encode_track_value_map(&entries, limits)?;
+    let reparsed = parse_track_value_map(&encoded, limits)?;
+    if reparsed != entries {
+        return Err(Error::InvalidWrite {
+            reason: "rebuilt TrackValueMap did not round-trip".to_owned(),
+        });
+    }
+    if encoded == bytes {
+        return Ok(original);
+    }
+    let changed = connection.execute(
+        "UPDATE Track SET TrackValueMap = ?1 WHERE MainId = ?2",
+        params![encoded, track_id],
+    )?;
+    if changed != 1 {
+        return Err(Error::InvalidWrite {
+            reason: format!("animation track {track_id} is not unique"),
+        });
+    }
+    Ok(original)
+}
+
+#[cfg(feature = "write")]
+fn validate_track_value_replacement(
+    original: &AnimationTrackValue,
+    replacement: &AnimationTrackValue,
+) -> Result<()> {
+    let valid = match (original, replacement) {
+        (AnimationTrackValue::Float(_), AnimationTrackValue::Float(value)) => value.is_finite(),
+        (AnimationTrackValue::IndexedText { .. }, AnimationTrackValue::IndexedText { .. }) => true,
+        (AnimationTrackValue::Vector2 { .. }, AnimationTrackValue::Vector2 { x, y }) => {
+            x.is_finite() && y.is_finite()
+        }
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(Error::InvalidWrite {
+            reason: "animation value replacement must be finite, known, and keep its original kind"
+                .to_owned(),
+        })
+    }
+}
+
+#[cfg(feature = "write")]
+fn encode_track_value_map(entries: &[AnimationTrackValueEntry], limits: Limits) -> Result<Vec<u8>> {
+    enforce_item_limit(
+        entries.len() as u64,
+        limits.max_animation_items(),
+        "animation track values",
+    )?;
+    let count = u32::try_from(entries.len()).map_err(|_| Error::OffsetOverflow)?;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&8_u32.to_be_bytes());
+    bytes.extend_from_slice(&count.to_be_bytes());
+    for entry in entries {
+        let start = bytes.len();
+        bytes.extend_from_slice(&0_u32.to_be_bytes());
+        encode_utf16be_value(&mut bytes, &entry.name)?;
+        match &entry.value {
+            AnimationTrackValue::Float(value) => {
+                if !value.is_finite() {
+                    return Err(Error::InvalidWrite {
+                        reason: "animation float replacement is not finite".to_owned(),
+                    });
+                }
+                encode_utf16be_value(&mut bytes, "")?;
+                bytes.extend_from_slice(&0_u32.to_be_bytes());
+                bytes.extend_from_slice(&value.to_be_bytes());
+            }
+            AnimationTrackValue::IndexedText {
+                text,
+                numeric_value,
+            } => {
+                encode_utf16be_value(&mut bytes, text)?;
+                bytes.extend_from_slice(&2_u32.to_be_bytes());
+                bytes.extend_from_slice(&numeric_value.to_be_bytes());
+            }
+            AnimationTrackValue::Vector2 { x, y } => {
+                if !x.is_finite() || !y.is_finite() {
+                    return Err(Error::InvalidWrite {
+                        reason: "animation vector replacement is not finite".to_owned(),
+                    });
+                }
+                encode_utf16be_value(&mut bytes, "")?;
+                bytes.extend_from_slice(&3_u32.to_be_bytes());
+                bytes.extend_from_slice(&x.to_be_bytes());
+                bytes.extend_from_slice(&y.to_be_bytes());
+            }
+            AnimationTrackValue::Unknown {
+                kind,
+                text,
+                payload,
+            } => {
+                encode_utf16be_value(&mut bytes, text)?;
+                bytes.extend_from_slice(&kind.to_be_bytes());
+                bytes.extend_from_slice(payload);
+            }
+        }
+        let size = u32::try_from(bytes.len() - start).map_err(|_| Error::OffsetOverflow)?;
+        bytes[start..start + 4].copy_from_slice(&size.to_be_bytes());
+        enforce_byte_limit(
+            bytes.len() as u64,
+            limits.max_animation_bytes(),
+            "animation track value map",
+        )?;
+    }
+    Ok(bytes)
+}
+
+#[cfg(feature = "write")]
+fn encode_utf16be_value(bytes: &mut Vec<u8>, value: &str) -> Result<()> {
+    let units = value.encode_utf16().collect::<Vec<_>>();
+    let count = u32::try_from(units.len()).map_err(|_| Error::OffsetOverflow)?;
+    bytes.extend_from_slice(&count.to_be_bytes());
+    for unit in units {
+        bytes.extend_from_slice(&unit.to_be_bytes());
+    }
+    Ok(())
+}
+
 impl<R: Read + Seek> ClipFile<R> {
     /// Reads the enabled timeline and its image-cel selection curves.
     ///
@@ -1188,6 +1490,1505 @@ impl<R: Read + Seek> ClipFile<R> {
             animation_tracks,
         }))
     }
+}
+
+#[cfg(feature = "write")]
+impl<R: Read + Seek> ClipWriter<'_, R> {
+    /// Clones an existing animation `Track` into another untracked layer.
+    ///
+    /// The template row supplies the complete known and unknown Track
+    /// structure. The clone receives a newly allocated `MainId`, UUID-v4
+    /// `TrackUuid`, and independent copies of both mixer external bodies, then
+    /// is appended to `timeline_id`'s validated `TrackNextIndex` chain. The
+    /// target layer must exist, have a valid UUID, and not already be linked
+    /// from another Track.
+    ///
+    /// This API intentionally does not synthesize a mixer or infer a
+    /// `TrackKind`: the BINC object metadata needed for arbitrary track
+    /// construction is not fully understood. It also cannot prove that the
+    /// template's raw `TrackKind` is semantically compatible with the target
+    /// layer. Callers must choose the same kind of layer/template pair; using
+    /// unrelated kinds can produce an application-incompatible file.
+    pub fn clone_animation_track_from_template(
+        &mut self,
+        template_track_id: i64,
+        timeline_id: i64,
+        target_layer_id: i64,
+        limits: Limits,
+    ) -> Result<AnimationTrackCloneSummary> {
+        validate_animation_track_clone_schema(self.database().schema())?;
+        let source = writable_animation_track(
+            self.database().connection(),
+            self.database().schema(),
+            template_track_id,
+        )?;
+        validate_unique_animation_mixers(
+            self.database().connection(),
+            self.database().schema(),
+            template_track_id,
+            &source,
+        )?;
+
+        let primary_body = clone_animation_mixer_body(
+            self,
+            template_track_id,
+            "primary",
+            source.primary_identifier.as_deref(),
+            source.primary_size_column,
+            source.primary_declared_size,
+            limits,
+        )?;
+        let secondary_body = clone_animation_mixer_body(
+            self,
+            template_track_id,
+            "secondary",
+            source.secondary_identifier.as_deref(),
+            source.secondary_size_column,
+            source.secondary_declared_size,
+            limits,
+        )?;
+        let (bank_id, previous_tail_id) =
+            animation_clone_timeline_chain(self.database().connection(), timeline_id)?;
+        let layer_uuid =
+            animation_clone_layer_uuid(self.database().connection(), target_layer_id, limits)?;
+        let track_id = next_animation_track_id(self.database().connection())?;
+        let track_uuid = generate_animation_track_uuid(self.database().connection(), limits)?;
+        let track_columns = animation_clone_columns(self.database().schema())?;
+
+        let mut staged = Vec::<Vec<u8>>::new();
+        let primary_identifier = match primary_body {
+            Some(body) => match self.stage_new_external_body(
+                body,
+                limits.max_animation_bytes(),
+                "cloned primary animation mixer body",
+            ) {
+                Ok(identifier) => {
+                    staged.push(identifier.clone());
+                    Some(identifier)
+                }
+                Err(error) => return Err(error),
+            },
+            None => None,
+        };
+        let secondary_identifier = match secondary_body {
+            Some(body) => match self.stage_new_external_body(
+                body,
+                limits.max_animation_bytes(),
+                "cloned secondary animation mixer body",
+            ) {
+                Ok(identifier) => {
+                    staged.push(identifier.clone());
+                    Some(identifier)
+                }
+                Err(error) => {
+                    rollback_animation_additions(self, &staged);
+                    return Err(error);
+                }
+            },
+            None => None,
+        };
+
+        let insertion = insert_animation_track_clone(
+            self.database_mut().connection_mut(),
+            &track_columns,
+            AnimationTrackCloneInsert {
+                template_track_id,
+                track_id,
+                timeline_id,
+                bank_id,
+                previous_tail_id,
+                layer_uuid,
+                track_uuid,
+                primary_identifier: primary_identifier.as_deref(),
+                secondary_identifier: secondary_identifier.as_deref(),
+            },
+        );
+        if let Err(error) = insertion {
+            rollback_animation_additions(self, &staged);
+            return Err(error);
+        }
+
+        Ok(AnimationTrackCloneSummary {
+            template_track_id,
+            track_id,
+            timeline_id,
+            layer_id: target_layer_id,
+            track_uuid,
+            primary_mixer_identifier: primary_identifier.map(Box::from),
+            secondary_mixer_identifier: secondary_identifier.map(Box::from),
+        })
+    }
+
+    /// Replaces the numeric time and value of one existing primary curve key.
+    ///
+    /// The matching primary `FCurve` must be unique. When the track has a
+    /// matching secondary curve, its double-precision time and value are
+    /// updated to the same values. Every unknown mixer byte and all other
+    /// curve fields remain unchanged.
+    pub fn replace_animation_curve_keyframe_numeric(
+        &mut self,
+        track_id: i64,
+        curve_kind: &str,
+        axis: Option<&str>,
+        key_index: usize,
+        replacement: AnimationCurveKeyframeValues,
+        limits: Limits,
+    ) -> Result<AnimationCurveKeyframe> {
+        let time_60hz = replacement.time_60hz();
+        let value = replacement.value();
+        if !time_60hz.is_finite() || !value.is_finite() {
+            return Err(Error::InvalidWrite {
+                reason: "animation curve replacement must be finite".to_owned(),
+            });
+        }
+        let source = writable_animation_track(
+            self.database().connection(),
+            self.database().schema(),
+            track_id,
+        )?;
+        validate_unique_animation_mixers(
+            self.database().connection(),
+            self.database().schema(),
+            track_id,
+            &source,
+        )?;
+        let primary_id = source
+            .primary_identifier
+            .ok_or_else(|| Error::InvalidWrite {
+                reason: format!("animation track {track_id} has no primary action mixer"),
+            })?;
+        let primary_body =
+            self.external_body_for_update(&primary_id, limits.max_animation_bytes())?;
+        let mut primary_mixer = decode_writable_mixer(&primary_body, limits)?;
+        validate_declared_mixer_size(
+            track_id,
+            "primary",
+            source.primary_size_column,
+            source.primary_declared_size,
+            primary_mixer.len(),
+        )?;
+        let original = patch_primary_curve_numeric(
+            &mut primary_mixer,
+            curve_kind,
+            axis,
+            key_index,
+            time_60hz,
+            value,
+            limits,
+        )?;
+        let primary_replacement = encode_writable_mixer_for_writer(self, &primary_mixer, limits)?;
+
+        let secondary_replacement = if let Some(identifier) = source.secondary_identifier.as_deref()
+        {
+            let body = self.external_body_for_update(identifier, limits.max_animation_bytes())?;
+            let mut mixer = decode_writable_mixer(&body, limits)?;
+            validate_declared_mixer_size(
+                track_id,
+                "secondary",
+                source.secondary_size_column,
+                source.secondary_declared_size,
+                mixer.len(),
+            )?;
+            patch_secondary_curve_numeric(
+                &mut mixer,
+                curve_kind,
+                axis,
+                key_index,
+                f64::from(time_60hz),
+                f64::from(value),
+                limits,
+            )?;
+            Some((
+                identifier.to_vec(),
+                encode_writable_mixer_for_writer(self, &mixer, limits)?,
+            ))
+        } else {
+            None
+        };
+
+        let mut replacements = vec![(primary_id, primary_replacement)];
+        if let Some((identifier, replacement)) = secondary_replacement {
+            replacements.push((identifier, replacement));
+        }
+        install_animation_replacements(self, replacements)?;
+        Ok(original)
+    }
+
+    /// Replaces one existing image-cel key's tag.
+    ///
+    /// Primary and matching secondary `ImageCelName` curves are updated
+    /// together. If the track's typed current value names the same old cel, it
+    /// is synchronized as well. This method does not add or remove keyframes.
+    pub fn replace_animation_cel_tag(
+        &mut self,
+        track_id: i64,
+        key_index: usize,
+        tag: impl AsRef<str>,
+        limits: Limits,
+    ) -> Result<String> {
+        let tag = tag.as_ref();
+        if tag.len() > u8::MAX as usize {
+            return Err(Error::InvalidWrite {
+                reason: "animation mixer strings cannot exceed 255 UTF-8 bytes".to_owned(),
+            });
+        }
+        let source = writable_animation_track(
+            self.database().connection(),
+            self.database().schema(),
+            track_id,
+        )?;
+        validate_unique_animation_mixers(
+            self.database().connection(),
+            self.database().schema(),
+            track_id,
+            &source,
+        )?;
+        let primary_id = source
+            .primary_identifier
+            .ok_or_else(|| Error::InvalidWrite {
+                reason: format!("animation track {track_id} has no primary action mixer"),
+            })?;
+        let primary_body =
+            self.external_body_for_update(&primary_id, limits.max_animation_bytes())?;
+        let mut primary_mixer = decode_writable_mixer(&primary_body, limits)?;
+        validate_declared_mixer_size(
+            track_id,
+            "primary",
+            source.primary_size_column,
+            source.primary_declared_size,
+            primary_mixer.len(),
+        )?;
+        let original = patch_primary_curve_tag(&mut primary_mixer, key_index, tag, limits)?;
+        let primary_size = primary_mixer.len();
+        let primary_replacement = encode_writable_mixer_for_writer(self, &primary_mixer, limits)?;
+
+        let secondary_replacement = if let Some(identifier) = source.secondary_identifier.as_deref()
+        {
+            let body = self.external_body_for_update(identifier, limits.max_animation_bytes())?;
+            let mut mixer = decode_writable_mixer(&body, limits)?;
+            validate_declared_mixer_size(
+                track_id,
+                "secondary",
+                source.secondary_size_column,
+                source.secondary_declared_size,
+                mixer.len(),
+            )?;
+            if let Some(previous) = patch_secondary_curve_tag(&mut mixer, key_index, tag, limits)? {
+                if previous != original {
+                    return Err(Error::InvalidWrite {
+                        reason: format!(
+                            "animation track {track_id} has inconsistent primary and secondary cel tags"
+                        ),
+                    });
+                }
+                let size = mixer.len();
+                Some((
+                    identifier.to_vec(),
+                    encode_writable_mixer_for_writer(self, &mixer, limits)?,
+                    size,
+                ))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let updated_value_map = source
+            .value_map
+            .as_deref()
+            .map(|bytes| synchronize_cel_track_value(bytes, &original, tag, limits))
+            .transpose()?
+            .flatten();
+
+        let mut replacements = vec![(primary_id, primary_replacement)];
+        if let Some((identifier, replacement, _)) = &secondary_replacement {
+            replacements.push((identifier.clone(), replacement.clone()));
+        }
+        let installed = install_animation_replacements(self, replacements)?;
+        let secondary_size = secondary_replacement
+            .as_ref()
+            .map(|(_, _, size)| *size)
+            .or_else(|| {
+                source
+                    .secondary_declared_size
+                    .and_then(|size| usize::try_from(size).ok())
+            });
+        if let Err(error) = update_animation_track_metadata(
+            self.database().connection(),
+            track_id,
+            source.primary_size_column.then_some(primary_size),
+            source
+                .secondary_size_column
+                .then_some(secondary_size)
+                .flatten(),
+            updated_value_map.as_deref(),
+        ) {
+            rollback_animation_replacements(self, installed);
+            return Err(error);
+        }
+        Ok(original)
+    }
+}
+
+#[cfg(feature = "write")]
+fn validate_animation_track_clone_schema(schema: &DatabaseSchema) -> Result<()> {
+    for (table, columns) in [
+        (
+            "Track",
+            &[
+                "MainId",
+                "BankId",
+                "TrackNextIndex",
+                "TrackActionMixer",
+                "TrackUuid",
+                "LayerUuidWithTrack",
+            ][..],
+        ),
+        ("TimeLine", &["MainId", "BankId", "FirstTrack"][..]),
+        ("Layer", &["MainId", "LayerUuid"][..]),
+    ] {
+        for column in columns {
+            if !schema.has_column(table, column) {
+                return Err(Error::InvalidWrite {
+                    reason: format!("{table}.{column} is required to clone an animation track"),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "write")]
+fn clone_animation_mixer_body<R: Read + Seek>(
+    writer: &mut ClipWriter<'_, R>,
+    track_id: i64,
+    label: &'static str,
+    identifier: Option<&[u8]>,
+    size_column: bool,
+    declared_size: Option<i64>,
+    limits: Limits,
+) -> Result<Option<Vec<u8>>> {
+    let Some(identifier) = identifier else {
+        if size_column && declared_size.is_some() {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "animation track {track_id} has a {label} mixer size but no identifier"
+                ),
+            });
+        }
+        return Ok(None);
+    };
+    let body = writer.external_body_for_update(identifier, limits.max_animation_bytes())?;
+    let mixer = decode_writable_mixer(&body, limits)?;
+    validate_declared_mixer_size(track_id, label, size_column, declared_size, mixer.len())?;
+    Ok(Some(body))
+}
+
+#[cfg(feature = "write")]
+fn animation_clone_timeline_chain(
+    connection: &rusqlite::Connection,
+    timeline_id: i64,
+) -> Result<(i64, Option<i64>)> {
+    let row_count: i64 = connection.query_row(
+        "SELECT count(*) FROM TimeLine WHERE MainId = ?1",
+        params![timeline_id],
+        |row| row.get(0),
+    )?;
+    if row_count != 1 {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "expected one target timeline with ID {timeline_id}, found {row_count}"
+            ),
+        });
+    }
+    let (bank_id, first_track_id) = connection.query_row(
+        "SELECT BankId, FirstTrack FROM TimeLine WHERE MainId = ?1 LIMIT 1",
+        params![timeline_id],
+        |row| Ok((row.get::<_, i64>(0)?, nonzero_track_id(row.get(1)?))),
+    )?;
+
+    let mut statement = connection
+        .prepare("SELECT MainId, TrackNextIndex FROM Track WHERE BankId = ?1 ORDER BY MainId")?;
+    let mut rows = statement.query(params![bank_id])?;
+    let mut by_id = BTreeMap::<i64, Option<i64>>::new();
+    while let Some(row) = rows.next()? {
+        let id: i64 = row.get(0)?;
+        let next = nonzero_track_id(row.get(1)?);
+        if by_id.insert(id, next).is_some() {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "target timeline {timeline_id} contains duplicate Track.MainId {id}"
+                ),
+            });
+        }
+    }
+    let Some(mut current) = first_track_id else {
+        if !by_id.is_empty() {
+            return Err(Error::InvalidWrite {
+                reason: format!("target timeline {timeline_id} has tracks but no FirstTrack"),
+            });
+        }
+        return Ok((bank_id, None));
+    };
+    let mut visited = BTreeMap::<i64, ()>::new();
+    loop {
+        if visited.insert(current, ()).is_some() {
+            return Err(Error::InvalidWrite {
+                reason: format!("target timeline {timeline_id} track chain is cyclic at {current}"),
+            });
+        }
+        let next = by_id.get(&current).ok_or_else(|| Error::InvalidWrite {
+            reason: format!("target timeline {timeline_id} references missing track {current}"),
+        })?;
+        match next {
+            Some(next) => current = *next,
+            None => break,
+        }
+    }
+    if visited.len() != by_id.len() {
+        return Err(Error::InvalidWrite {
+            reason: format!("target timeline {timeline_id} track chain contains unreachable rows"),
+        });
+    }
+    Ok((bank_id, Some(current)))
+}
+
+#[cfg(feature = "write")]
+fn animation_clone_layer_uuid(
+    connection: &rusqlite::Connection,
+    layer_id: i64,
+    limits: Limits,
+) -> Result<[u8; 16]> {
+    let row_count: i64 = connection.query_row(
+        "SELECT count(*) FROM Layer WHERE MainId = ?1",
+        params![layer_id],
+        |row| row.get(0),
+    )?;
+    if row_count != 1 {
+        return Err(Error::InvalidWrite {
+            reason: format!("expected one target layer with ID {layer_id}, found {row_count}"),
+        });
+    }
+    let raw = connection.query_row(
+        "SELECT LayerUuid FROM Layer WHERE MainId = ?1 LIMIT 1",
+        params![layer_id],
+        |row| {
+            optional_bytes(row.get_ref(0)?, 0, "LayerUuid")?
+                .map(<[u8]>::to_vec)
+                .ok_or_else(|| {
+                    rusqlite::Error::InvalidColumnType(
+                        0,
+                        "LayerUuid".to_owned(),
+                        rusqlite::types::Type::Null,
+                    )
+                })
+        },
+    )?;
+    enforce_byte_limit(
+        raw.len() as u64,
+        limits.max_identifier_size(),
+        "target animation layer UUID",
+    )?;
+    let uuid = normalize_uuid(&raw)?;
+
+    let mut statement =
+        connection.prepare("SELECT MainId, LayerUuid FROM Layer WHERE LayerUuid IS NOT NULL")?;
+    let mut rows = statement.query([])?;
+    let mut matching_layers = Vec::new();
+    let mut count = 0_u64;
+    while let Some(row) = rows.next()? {
+        count = count.checked_add(1).ok_or(Error::OffsetOverflow)?;
+        enforce_item_limit(count, limits.max_animation_items(), "animation layer UUIDs")?;
+        let value = required_bytes(row.get_ref(1)?, 1, "LayerUuid")?;
+        enforce_byte_limit(
+            value.len() as u64,
+            limits.max_identifier_size(),
+            "animation layer UUID",
+        )?;
+        if normalize_uuid(value)? == uuid {
+            matching_layers.push(row.get::<_, i64>(0)?);
+        }
+    }
+    if matching_layers != [layer_id] {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "target layer {layer_id} UUID resolves to {} Layer rows",
+                matching_layers.len()
+            ),
+        });
+    }
+
+    let mut statement = connection
+        .prepare("SELECT LayerUuidWithTrack FROM Track WHERE LayerUuidWithTrack IS NOT NULL")?;
+    let mut rows = statement.query([])?;
+    let mut count = 0_u64;
+    while let Some(row) = rows.next()? {
+        count = count.checked_add(1).ok_or(Error::OffsetOverflow)?;
+        enforce_item_limit(
+            count,
+            limits.max_animation_items(),
+            "animation layer associations",
+        )?;
+        let value = required_bytes(row.get_ref(0)?, 0, "LayerUuidWithTrack")?;
+        enforce_byte_limit(
+            value.len() as u64,
+            limits.max_identifier_size(),
+            "animation layer UUID",
+        )?;
+        if normalize_uuid(value)? == uuid {
+            return Err(Error::InvalidWrite {
+                reason: format!("target layer {layer_id} already has an animation track"),
+            });
+        }
+    }
+    Ok(uuid)
+}
+
+#[cfg(feature = "write")]
+fn next_animation_track_id(connection: &rusqlite::Connection) -> Result<i64> {
+    let (row_count, non_null_count, distinct_count): (i64, i64, i64) = connection.query_row(
+        "SELECT count(*), count(MainId), count(DISTINCT MainId) FROM Track",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let null_count = row_count - non_null_count;
+    if null_count != 0 {
+        return Err(Error::InvalidWrite {
+            reason: "Track contains NULL MainId values".to_owned(),
+        });
+    }
+    if distinct_count != row_count {
+        return Err(Error::InvalidWrite {
+            reason: "Track contains duplicate MainId values".to_owned(),
+        });
+    }
+    let maximum: Option<i64> =
+        connection.query_row("SELECT max(MainId) FROM Track", [], |row| row.get(0))?;
+    let track_id = maximum
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or(Error::OffsetOverflow)?;
+    if track_id <= 0 {
+        return Err(Error::InvalidWrite {
+            reason: "could not allocate a positive Track.MainId".to_owned(),
+        });
+    }
+    Ok(track_id)
+}
+
+#[cfg(feature = "write")]
+fn generate_animation_track_uuid(
+    connection: &rusqlite::Connection,
+    limits: Limits,
+) -> Result<[u8; 16]> {
+    let mut occupied = BTreeMap::<[u8; 16], ()>::new();
+    for (table, column) in [
+        ("Track", "TrackUuid"),
+        ("Track", "LayerUuidWithTrack"),
+        ("Layer", "LayerUuid"),
+    ] {
+        let sql = format!(
+            "SELECT {} FROM {} WHERE {} IS NOT NULL",
+            quote_sql_identifier(column),
+            quote_sql_identifier(table),
+            quote_sql_identifier(column),
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let mut rows = statement.query([])?;
+        let mut count = 0_u64;
+        while let Some(row) = rows.next()? {
+            count = count.checked_add(1).ok_or(Error::OffsetOverflow)?;
+            enforce_item_limit(
+                count,
+                limits.max_animation_items(),
+                "animation UUID candidates",
+            )?;
+            let value = required_bytes(row.get_ref(0)?, 0, column)?;
+            enforce_byte_limit(
+                value.len() as u64,
+                limits.max_identifier_size(),
+                "animation UUID",
+            )?;
+            let uuid = normalize_uuid(value)?;
+            if table == "Track" && column == "TrackUuid" && occupied.insert(uuid, ()).is_some() {
+                return Err(Error::InvalidWrite {
+                    reason: "Track contains duplicate TrackUuid values".to_owned(),
+                });
+            }
+            occupied.insert(uuid, ());
+        }
+    }
+    for _ in 0..128 {
+        let mut random: Vec<u8> =
+            connection.query_row("SELECT randomblob(16)", [], |row| row.get(0))?;
+        if random.len() != 16 {
+            return Err(Error::InvalidWrite {
+                reason: "SQLite returned an invalid animation UUID seed".to_owned(),
+            });
+        }
+        random[6] = (random[6] & 0x0f) | 0x40;
+        random[8] = (random[8] & 0x3f) | 0x80;
+        let uuid: [u8; 16] = random
+            .try_into()
+            .expect("SQLite random seed length checked above");
+        if !occupied.contains_key(&uuid) {
+            return Ok(uuid);
+        }
+    }
+    Err(Error::InvalidWrite {
+        reason: "could not generate a unique animation TrackUuid".to_owned(),
+    })
+}
+
+#[cfg(feature = "write")]
+fn animation_clone_columns(schema: &DatabaseSchema) -> Result<Vec<String>> {
+    let table = schema.table("Track").ok_or_else(|| Error::InvalidWrite {
+        reason: "Track table is required to clone an animation track".to_owned(),
+    })?;
+    let mut columns = Vec::new();
+    for column in table.columns() {
+        if column.name() == "_PW_ID" {
+            if column.primary_key_position() == 0 {
+                return Err(Error::InvalidWrite {
+                    reason: "Track._PW_ID is not a regeneratable primary key".to_owned(),
+                });
+            }
+            continue;
+        }
+        if column.primary_key_position() != 0 {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "cannot safely regenerate unexpected Track primary-key column {:?}",
+                    column.name()
+                ),
+            });
+        }
+        if column.hidden() == 0 {
+            columns.push(column.name().to_owned());
+        }
+    }
+    if columns.is_empty() {
+        return Err(Error::InvalidWrite {
+            reason: "Track has no cloneable columns".to_owned(),
+        });
+    }
+    Ok(columns)
+}
+
+#[cfg(feature = "write")]
+struct AnimationTrackCloneInsert<'a> {
+    template_track_id: i64,
+    track_id: i64,
+    timeline_id: i64,
+    bank_id: i64,
+    previous_tail_id: Option<i64>,
+    layer_uuid: [u8; 16],
+    track_uuid: [u8; 16],
+    primary_identifier: Option<&'a [u8]>,
+    secondary_identifier: Option<&'a [u8]>,
+}
+
+#[cfg(feature = "write")]
+fn insert_animation_track_clone(
+    connection: &mut rusqlite::Connection,
+    columns: &[String],
+    insertion: AnimationTrackCloneInsert<'_>,
+) -> Result<()> {
+    let column_list = columns
+        .iter()
+        .map(|column| quote_sql_identifier(column))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let selected = columns
+        .iter()
+        .map(|column| match column.as_str() {
+            "MainId" => "?1".to_owned(),
+            "BankId" => "?2".to_owned(),
+            "TrackNextIndex" => "0".to_owned(),
+            "TrackActionMixer" => "?3".to_owned(),
+            "TrackActionMixer2" => "?4".to_owned(),
+            "TrackUuid" => "?5".to_owned(),
+            "LayerUuidWithTrack" => "?6".to_owned(),
+            _ => format!("template.{}", quote_sql_identifier(column)),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "INSERT INTO Track ({column_list}) SELECT {selected} \
+         FROM Track AS template WHERE template.MainId = ?7"
+    );
+
+    let transaction = connection.transaction()?;
+    let inserted = transaction.execute(
+        &sql,
+        params![
+            insertion.track_id,
+            insertion.bank_id,
+            insertion.primary_identifier,
+            insertion.secondary_identifier,
+            insertion.track_uuid.as_slice(),
+            insertion.layer_uuid.as_slice(),
+            insertion.template_track_id,
+        ],
+    )?;
+    if inserted != 1 {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "animation template {} clone inserted {inserted} rows",
+                insertion.template_track_id
+            ),
+        });
+    }
+    let changed = if let Some(previous_tail_id) = insertion.previous_tail_id {
+        transaction.execute(
+            "UPDATE Track SET TrackNextIndex = ?1 \
+             WHERE MainId = ?2 AND BankId = ?3 AND (TrackNextIndex IS NULL OR TrackNextIndex = 0)",
+            params![insertion.track_id, previous_tail_id, insertion.bank_id],
+        )?
+    } else {
+        transaction.execute(
+            "UPDATE TimeLine SET FirstTrack = ?1 \
+             WHERE MainId = ?2 AND (FirstTrack IS NULL OR FirstTrack = 0)",
+            params![insertion.track_id, insertion.timeline_id],
+        )?
+    };
+    if changed != 1 {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "target timeline {} chain append affected {changed} rows",
+                insertion.timeline_id
+            ),
+        });
+    }
+    let (_, tail) = animation_clone_timeline_chain(&transaction, insertion.timeline_id)?;
+    if tail != Some(insertion.track_id) {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "target timeline {} did not end at cloned track {}",
+                insertion.timeline_id, insertion.track_id
+            ),
+        });
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
+#[cfg(feature = "write")]
+fn quote_sql_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
+#[cfg(feature = "write")]
+fn rollback_animation_additions<R: Read + Seek>(
+    writer: &mut ClipWriter<'_, R>,
+    identifiers: &[Vec<u8>],
+) {
+    for identifier in identifiers.iter().rev() {
+        writer.unstage_new_external_body(identifier);
+    }
+}
+
+#[cfg(feature = "write")]
+struct WritableAnimationTrack {
+    primary_identifier: Option<Vec<u8>>,
+    secondary_identifier: Option<Vec<u8>>,
+    value_map: Option<Vec<u8>>,
+    primary_size_column: bool,
+    secondary_size_column: bool,
+    primary_declared_size: Option<i64>,
+    secondary_declared_size: Option<i64>,
+}
+
+#[cfg(feature = "write")]
+fn validate_unique_animation_mixers(
+    connection: &rusqlite::Connection,
+    schema: &DatabaseSchema,
+    track_id: i64,
+    source: &WritableAnimationTrack,
+) -> Result<()> {
+    if source.primary_identifier.is_some()
+        && source.primary_identifier == source.secondary_identifier
+    {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "animation track {track_id} aliases its primary and secondary mixer identifiers"
+            ),
+        });
+    }
+    let secondary_count = if schema.has_column("Track", "TrackActionMixer2") {
+        " + (SELECT count(*) FROM Track WHERE CAST(TrackActionMixer2 AS BLOB) = ?1)"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "SELECT (SELECT count(*) FROM Track \
+         WHERE CAST(TrackActionMixer AS BLOB) = ?1){secondary_count}"
+    );
+    for (label, identifier) in [
+        ("primary", source.primary_identifier.as_deref()),
+        ("secondary", source.secondary_identifier.as_deref()),
+    ] {
+        let Some(identifier) = identifier else {
+            continue;
+        };
+        let references: i64 = connection.query_row(&sql, params![identifier], |row| row.get(0))?;
+        if references != 1 {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "animation track {track_id} {label} mixer identifier has {references} Track references, expected exactly one"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "write")]
+fn writable_animation_track(
+    connection: &rusqlite::Connection,
+    schema: &DatabaseSchema,
+    track_id: i64,
+) -> Result<WritableAnimationTrack> {
+    for column in ["MainId", "TrackActionMixer"] {
+        if !schema.has_column("Track", column) {
+            return Err(Error::InvalidWrite {
+                reason: format!("Track.{column} is required to edit animation curves"),
+            });
+        }
+    }
+    let row_count: i64 = connection.query_row(
+        "SELECT count(*) FROM Track WHERE MainId = ?1",
+        params![track_id],
+        |row| row.get(0),
+    )?;
+    if row_count != 1 {
+        return Err(Error::InvalidWrite {
+            reason: format!("expected one animation track with ID {track_id}, found {row_count}"),
+        });
+    }
+    let optional = |column: &'static str| {
+        if schema.has_column("Track", column) {
+            column
+        } else {
+            "NULL"
+        }
+    };
+    let sql = format!(
+        "SELECT TrackActionMixer, {}, {}, {}, {} FROM Track WHERE MainId = ?1 LIMIT 1",
+        optional("TrackActionMixer2"),
+        optional("TrackValueMap"),
+        optional("TrackActionMixerSize"),
+        optional("TrackActionMixer2Size"),
+    );
+    connection
+        .query_row(&sql, params![track_id], |row| {
+            Ok(WritableAnimationTrack {
+                primary_identifier: optional_bytes(row.get_ref(0)?, 0, "TrackActionMixer")?
+                    .map(<[u8]>::to_vec),
+                secondary_identifier: optional_bytes(row.get_ref(1)?, 1, "TrackActionMixer2")?
+                    .map(<[u8]>::to_vec),
+                value_map: optional_bytes(row.get_ref(2)?, 2, "TrackValueMap")?.map(<[u8]>::to_vec),
+                primary_size_column: schema.has_column("Track", "TrackActionMixerSize"),
+                secondary_size_column: schema.has_column("Track", "TrackActionMixer2Size"),
+                primary_declared_size: row.get(3)?,
+                secondary_declared_size: row.get(4)?,
+            })
+        })
+        .optional()?
+        .ok_or_else(|| Error::InvalidWrite {
+            reason: format!("animation track {track_id} does not exist"),
+        })
+}
+
+#[cfg(feature = "write")]
+fn validate_declared_mixer_size(
+    track_id: i64,
+    label: &str,
+    column_present: bool,
+    declared: Option<i64>,
+    actual: usize,
+) -> Result<()> {
+    if !column_present {
+        return Ok(());
+    }
+    let declared = declared.ok_or_else(|| Error::InvalidWrite {
+        reason: format!("animation track {track_id} has a NULL {label} mixer size"),
+    })?;
+    if usize::try_from(declared).ok() != Some(actual) {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "animation track {track_id} declares {declared} {label} mixer bytes but stores {actual}"
+            ),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(feature = "write")]
+type InstalledAnimationReplacement = (Vec<u8>, Option<Vec<u8>>);
+
+#[cfg(feature = "write")]
+fn install_animation_replacements<R: Read + Seek>(
+    writer: &mut ClipWriter<'_, R>,
+    replacements: Vec<(Vec<u8>, Vec<u8>)>,
+) -> Result<Vec<InstalledAnimationReplacement>> {
+    let mut installed = Vec::new();
+    for (identifier, body) in replacements {
+        match writer.replace_or_update_external_body(&identifier, body) {
+            Ok(previous) => installed.push((identifier, previous)),
+            Err(error) => {
+                rollback_animation_replacements(writer, installed);
+                return Err(error);
+            }
+        }
+    }
+    Ok(installed)
+}
+
+#[cfg(feature = "write")]
+fn rollback_animation_replacements<R: Read + Seek>(
+    writer: &mut ClipWriter<'_, R>,
+    installed: Vec<InstalledAnimationReplacement>,
+) {
+    for (identifier, previous) in installed.into_iter().rev() {
+        if let Some(previous) = previous {
+            let _ = writer.replace_or_update_external_body(&identifier, previous);
+        } else {
+            writer.remove_external_replacement(&identifier);
+        }
+    }
+}
+
+#[cfg(feature = "write")]
+fn update_animation_track_metadata(
+    connection: &rusqlite::Connection,
+    track_id: i64,
+    primary_size: Option<usize>,
+    secondary_size: Option<usize>,
+    value_map: Option<&[u8]>,
+) -> Result<()> {
+    let mut assignments = Vec::new();
+    let mut values = Vec::<Value>::new();
+    let mut push = |column: &str, value: Value| {
+        values.push(value);
+        assignments.push(format!("{column} = ?{}", values.len()));
+    };
+    if let Some(size) = primary_size {
+        let size = i64::try_from(size).map_err(|_| Error::OffsetOverflow)?;
+        push("TrackActionMixerSize", Value::Integer(size));
+    }
+    if let Some(size) = secondary_size {
+        let size = i64::try_from(size).map_err(|_| Error::OffsetOverflow)?;
+        push("TrackActionMixer2Size", Value::Integer(size));
+    }
+    if let Some(value_map) = value_map {
+        push("TrackValueMap", Value::Blob(value_map.to_vec()));
+    }
+    if assignments.is_empty() {
+        return Ok(());
+    }
+    values.push(Value::Integer(track_id));
+    let sql = format!(
+        "UPDATE Track SET {} WHERE MainId = ?{}",
+        assignments.join(", "),
+        values.len()
+    );
+    let changed = connection.execute(&sql, params_from_iter(values.iter()))?;
+    if changed != 1 {
+        return Err(Error::InvalidWrite {
+            reason: format!("animation track {track_id} is not unique"),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(feature = "write")]
+fn decode_writable_mixer(body: &[u8], limits: Limits) -> Result<Vec<u8>> {
+    let length = body.get(..4).ok_or_else(|| Error::InvalidWrite {
+        reason: "animation mixer body lacks its little-endian length prefix".to_owned(),
+    })?;
+    let declared = u32::from_le_bytes(length.try_into().expect("four-byte slice")) as usize;
+    if declared != body.len() - 4 {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "animation mixer declares {declared} compressed bytes but stores {}",
+                body.len() - 4
+            ),
+        });
+    }
+    decompress_mixer(&body[4..], limits.max_animation_bytes())
+}
+
+#[cfg(feature = "write")]
+fn encode_writable_mixer(mixer: &[u8], limits: Limits) -> Result<Vec<u8>> {
+    enforce_byte_limit(
+        mixer.len() as u64,
+        limits.max_animation_bytes(),
+        "animation mixer bytes after replacement",
+    )?;
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(mixer)?;
+    let compressed = encoder.finish()?;
+    let size = u32::try_from(compressed.len()).map_err(|_| Error::OffsetOverflow)?;
+    let mut body = Vec::with_capacity(compressed.len() + 4);
+    body.extend_from_slice(&size.to_le_bytes());
+    body.extend_from_slice(&compressed);
+    enforce_byte_limit(
+        body.len() as u64,
+        limits.max_animation_bytes(),
+        "encoded animation mixer external body",
+    )?;
+    Ok(body)
+}
+
+#[cfg(feature = "write")]
+fn encode_writable_mixer_for_writer<R: Read + Seek>(
+    writer: &ClipWriter<'_, R>,
+    mixer: &[u8],
+    limits: Limits,
+) -> Result<Vec<u8>> {
+    let body = encode_writable_mixer(mixer, limits)?;
+    writer.validate_external_body_size_for_update(
+        &body,
+        limits.max_animation_bytes(),
+        "encoded animation mixer external body",
+    )?;
+    Ok(body)
+}
+
+#[cfg(feature = "write")]
+#[derive(Clone, Copy)]
+struct PrimaryKeyOffsets {
+    frame: usize,
+    value: usize,
+    tag: Option<usize>,
+}
+
+#[cfg(feature = "write")]
+fn primary_key_offsets(
+    bytes: &[u8],
+    curve_kind: &str,
+    axis: Option<&str>,
+    key_index: usize,
+    limits: Limits,
+) -> Result<(AnimationCurveKeyframe, PrimaryKeyOffsets)> {
+    let (strings, data_start) = parse_string_table_with_data_start(bytes, limits)?;
+    let fcurve = string_id_optional(&strings, "FCurve").ok_or_else(|| Error::InvalidWrite {
+        reason: "animation mixer has no FCurve string".to_owned(),
+    })?;
+    let mut found = None;
+    for start in data_start..=bytes.len().saturating_sub(12) {
+        let Some(header) = animation_curve_header(bytes, start, &strings, fcurve) else {
+            continue;
+        };
+        if header.kind != curve_kind || header.axis.as_deref() != axis {
+            continue;
+        }
+        if found.is_some() {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "animation mixer has multiple {curve_kind:?} curves for axis {axis:?}"
+                ),
+            });
+        }
+        let mut validated_cursor = header.cursor;
+        let curve = parse_animation_curve_fields(
+            bytes,
+            &strings,
+            &mut validated_cursor,
+            header.kind.clone(),
+            header.axis.clone(),
+            limits,
+        )?;
+        let key = curve
+            .keyframes
+            .get(key_index)
+            .cloned()
+            .ok_or_else(|| Error::InvalidWrite {
+                reason: format!(
+                    "animation curve {curve_kind:?} has {} keys, so index {key_index} is invalid",
+                    curve.keyframes.len()
+                ),
+            })?;
+        let offsets = locate_primary_key_fields(bytes, &strings, header.cursor, key_index)?;
+        found = Some((key, offsets));
+    }
+    found.ok_or_else(|| Error::InvalidWrite {
+        reason: format!("animation mixer has no {curve_kind:?} curve for axis {axis:?}"),
+    })
+}
+
+#[cfg(feature = "write")]
+fn locate_primary_key_fields(
+    bytes: &[u8],
+    strings: &[String],
+    mut cursor: usize,
+    key_index: usize,
+) -> Result<PrimaryKeyOffsets> {
+    let field_count = read_u32(bytes, &mut cursor)?;
+    let mut frame = None;
+    let mut value = None;
+    let mut tag = None;
+    for _ in 0..field_count {
+        let field = string_at(strings, read_u32(bytes, &mut cursor)?)?;
+        let field_type = string_at(strings, read_u32(bytes, &mut cursor)?)?;
+        let count = read_u32(bytes, &mut cursor)? as usize;
+        let data = cursor;
+        match field_type {
+            "Single[]" | "String[]" | "Int32[]" => {
+                if key_index < count {
+                    let offset = data
+                        .checked_add(key_index.checked_mul(4).ok_or(Error::OffsetOverflow)?)
+                        .ok_or(Error::OffsetOverflow)?;
+                    match (field, field_type) {
+                        ("Frame", "Single[]") => frame = Some(offset),
+                        ("Value", "Single[]") => value = Some(offset),
+                        ("Tag", "String[]") => tag = Some(offset),
+                        _ => {}
+                    }
+                }
+                skip_array(bytes, &mut cursor, count, 4)?;
+            }
+            "Byte[]" => skip(bytes, &mut cursor, count)?,
+            "Float2[]" => skip_array(bytes, &mut cursor, count, 8)?,
+            "Float3[]" => skip_array(bytes, &mut cursor, count, 12)?,
+            "Quat[]" => skip_array(bytes, &mut cursor, count, 16)?,
+            "Matrix44[]" => skip_array(bytes, &mut cursor, count, 64)?,
+            other => {
+                return Err(animation_error(format!(
+                    "unsupported FCurve field type {other:?} while locating a write"
+                )));
+            }
+        }
+        if [read_u32(bytes, &mut cursor)?, read_u32(bytes, &mut cursor)?] != [0, 0] {
+            return Err(animation_error(
+                "FCurve field has a nonzero terminator while locating a write",
+            ));
+        }
+    }
+    Ok(PrimaryKeyOffsets {
+        frame: frame.ok_or_else(|| Error::InvalidWrite {
+            reason: "animation curve key has no writable Frame value".to_owned(),
+        })?,
+        value: value.ok_or_else(|| Error::InvalidWrite {
+            reason: "animation curve key has no writable Value value".to_owned(),
+        })?,
+        tag,
+    })
+}
+
+#[cfg(feature = "write")]
+fn patch_primary_curve_numeric(
+    bytes: &mut [u8],
+    curve_kind: &str,
+    axis: Option<&str>,
+    key_index: usize,
+    time_60hz: f32,
+    value: f32,
+    limits: Limits,
+) -> Result<AnimationCurveKeyframe> {
+    let (original, offsets) = primary_key_offsets(bytes, curve_kind, axis, key_index, limits)?;
+    bytes[offsets.frame..offsets.frame + 4].copy_from_slice(&time_60hz.to_le_bytes());
+    bytes[offsets.value..offsets.value + 4].copy_from_slice(&value.to_le_bytes());
+    let (updated, _) = primary_key_offsets(bytes, curve_kind, axis, key_index, limits)?;
+    if updated.time_60hz != time_60hz || updated.value != value {
+        return Err(Error::InvalidWrite {
+            reason: "primary animation curve replacement did not round-trip".to_owned(),
+        });
+    }
+    Ok(original)
+}
+
+#[cfg(feature = "write")]
+fn ensure_mixer_string(bytes: &mut Vec<u8>, value: &str, limits: Limits) -> Result<u32> {
+    let (strings, data_start) = parse_string_table_with_data_start(bytes, limits)?;
+    if let Some(id) = string_id_optional(&strings, value) {
+        return Ok(id);
+    }
+    if value.len() > u8::MAX as usize {
+        return Err(Error::InvalidWrite {
+            reason: "animation mixer strings cannot exceed 255 UTF-8 bytes".to_owned(),
+        });
+    }
+    let count = u32::try_from(strings.len()).map_err(|_| Error::OffsetOverflow)?;
+    enforce_item_limit(
+        u64::from(count) + 1,
+        limits.max_animation_items(),
+        "animation mixer strings after replacement",
+    )?;
+    let mut encoded = Vec::with_capacity(value.len() + 1);
+    encoded.push(value.len() as u8);
+    encoded.extend_from_slice(value.as_bytes());
+    bytes.splice(data_start..data_start, encoded);
+    bytes[16..20].copy_from_slice(&(count + 1).to_le_bytes());
+    Ok(count)
+}
+
+#[cfg(feature = "write")]
+fn patch_primary_curve_tag(
+    bytes: &mut Vec<u8>,
+    key_index: usize,
+    tag: &str,
+    limits: Limits,
+) -> Result<String> {
+    let id = ensure_mixer_string(bytes, tag, limits)?;
+    let (original, offsets) = primary_key_offsets(bytes, "ImageCelName", None, key_index, limits)?;
+    let tag_offset = offsets.tag.ok_or_else(|| Error::InvalidWrite {
+        reason: "ImageCelName curve has no writable Tag array".to_owned(),
+    })?;
+    bytes[tag_offset..tag_offset + 4].copy_from_slice(&id.to_le_bytes());
+    let (updated, _) = primary_key_offsets(bytes, "ImageCelName", None, key_index, limits)?;
+    if updated.tag.as_deref() != Some(tag) {
+        return Err(Error::InvalidWrite {
+            reason: "cel tag replacement did not round-trip".to_owned(),
+        });
+    }
+    original.tag.ok_or_else(|| Error::InvalidWrite {
+        reason: "ImageCelName key has no original tag".to_owned(),
+    })
+}
+
+#[cfg(feature = "write")]
+#[derive(Clone, Copy)]
+struct SecondaryKeyOffsets {
+    frame: usize,
+    value: usize,
+    tag: Option<usize>,
+}
+
+#[cfg(feature = "write")]
+fn secondary_key_offsets(
+    bytes: &[u8],
+    curve_kind: &str,
+    axis: Option<&str>,
+    key_index: usize,
+    limits: Limits,
+) -> Result<Option<(SecondaryAnimationCurveKeyframe, SecondaryKeyOffsets)>> {
+    let (strings, data_start) = parse_string_table_with_data_start(bytes, limits)?;
+    let Some(fcurve) = string_id_optional(&strings, "FCurve") else {
+        return Ok(None);
+    };
+    let Some(int32_array) = string_id_optional(&strings, "Int32[]") else {
+        return Ok(None);
+    };
+    let mut found = None;
+    for start in data_start..=bytes.len().saturating_sub(12) {
+        let Some(header) = animation_curve_header(bytes, start, &strings, fcurve) else {
+            continue;
+        };
+        if header.kind != curve_kind || header.axis.as_deref() != axis {
+            continue;
+        }
+        let mut validated_cursor = header.cursor;
+        let field_count = read_u32(bytes, &mut validated_cursor)?;
+        if !secondary_field_header_matches(bytes, validated_cursor, strings.len(), int32_array) {
+            continue;
+        }
+        if found.is_some() {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "secondary animation mixer has multiple {curve_kind:?} curves for axis {axis:?}"
+                ),
+            });
+        }
+        let curve = parse_secondary_animation_curve_fields(
+            bytes,
+            &strings,
+            &mut validated_cursor,
+            header.kind,
+            header.axis,
+            field_count,
+            limits,
+        )?;
+        let key = curve
+            .keyframes
+            .get(key_index)
+            .cloned()
+            .ok_or_else(|| Error::InvalidWrite {
+                reason: format!(
+                    "secondary animation curve {curve_kind:?} has {} keys, so index {key_index} is invalid",
+                    curve.keyframes.len()
+                ),
+            })?;
+        let offsets = locate_secondary_key_fields(bytes, &strings, header.cursor, key_index)?;
+        found = Some((key, offsets));
+    }
+    Ok(found)
+}
+
+#[cfg(feature = "write")]
+fn locate_secondary_key_fields(
+    bytes: &[u8],
+    strings: &[String],
+    mut cursor: usize,
+    key_index: usize,
+) -> Result<SecondaryKeyOffsets> {
+    let field_count = read_u32(bytes, &mut cursor)?;
+    let mut frame = None;
+    let mut value = None;
+    let mut tag = None;
+    for _ in 0..field_count {
+        skip_array(bytes, &mut cursor, 3, 4)?;
+        let field = string_at(strings, read_u32(bytes, &mut cursor)?)?;
+        let field_type = string_at(strings, read_u32(bytes, &mut cursor)?)?;
+        let count = read_u32(bytes, &mut cursor)? as usize;
+        let data = cursor;
+        match field_type {
+            "Double[]" => {
+                if key_index < count {
+                    let offset = data
+                        .checked_add(key_index.checked_mul(8).ok_or(Error::OffsetOverflow)?)
+                        .ok_or(Error::OffsetOverflow)?;
+                    match field {
+                        "Frame" => frame = Some(offset),
+                        "Value" => value = Some(offset),
+                        _ => {}
+                    }
+                }
+                skip_array(bytes, &mut cursor, count, 8)?;
+            }
+            "Single[]" | "String[]" | "Int32[]" | "UInt32[]" => {
+                if field_type == "String[]" && field == "Tag" && key_index < count {
+                    tag = Some(
+                        data.checked_add(key_index.checked_mul(4).ok_or(Error::OffsetOverflow)?)
+                            .ok_or(Error::OffsetOverflow)?,
+                    );
+                }
+                skip_array(bytes, &mut cursor, count, 4)?;
+            }
+            "Byte[]" => skip(bytes, &mut cursor, count)?,
+            "Float2[]" => skip_array(bytes, &mut cursor, count, 8)?,
+            "Float3[]" => skip_array(bytes, &mut cursor, count, 12)?,
+            "Double2[]" => skip_array(bytes, &mut cursor, count, 16)?,
+            "Double3[]" => skip_array(bytes, &mut cursor, count, 24)?,
+            "Quat[]" => skip_array(bytes, &mut cursor, count, 32)?,
+            "Matrix44[]" => skip_array(bytes, &mut cursor, count, 128)?,
+            other => {
+                return Err(animation_error(format!(
+                    "unsupported secondary FCurve field type {other:?} while locating a write"
+                )));
+            }
+        }
+        if [read_u32(bytes, &mut cursor)?, read_u32(bytes, &mut cursor)?] != [0, 0] {
+            return Err(animation_error(
+                "secondary FCurve field has a nonzero terminator while locating a write",
+            ));
+        }
+    }
+    Ok(SecondaryKeyOffsets {
+        frame: frame.ok_or_else(|| Error::InvalidWrite {
+            reason: "secondary animation curve key has no writable Frame value".to_owned(),
+        })?,
+        value: value.ok_or_else(|| Error::InvalidWrite {
+            reason: "secondary animation curve key has no writable Value value".to_owned(),
+        })?,
+        tag,
+    })
+}
+
+#[cfg(feature = "write")]
+fn patch_secondary_curve_numeric(
+    bytes: &mut [u8],
+    curve_kind: &str,
+    axis: Option<&str>,
+    key_index: usize,
+    time_60hz: f64,
+    value: f64,
+    limits: Limits,
+) -> Result<()> {
+    let Some((_, offsets)) = secondary_key_offsets(bytes, curve_kind, axis, key_index, limits)?
+    else {
+        return Ok(());
+    };
+    bytes[offsets.frame..offsets.frame + 8].copy_from_slice(&time_60hz.to_le_bytes());
+    bytes[offsets.value..offsets.value + 8].copy_from_slice(&value.to_le_bytes());
+    let Some((updated, _)) = secondary_key_offsets(bytes, curve_kind, axis, key_index, limits)?
+    else {
+        return Err(Error::InvalidWrite {
+            reason: "secondary animation curve disappeared after replacement".to_owned(),
+        });
+    };
+    if updated.time_60hz != time_60hz || updated.value != value {
+        return Err(Error::InvalidWrite {
+            reason: "secondary animation curve replacement did not round-trip".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(feature = "write")]
+fn patch_secondary_curve_tag(
+    bytes: &mut Vec<u8>,
+    key_index: usize,
+    tag: &str,
+    limits: Limits,
+) -> Result<Option<String>> {
+    if secondary_key_offsets(bytes, "ImageCelName", None, key_index, limits)?.is_none() {
+        return Ok(None);
+    }
+    let id = ensure_mixer_string(bytes, tag, limits)?;
+    let Some((original, offsets)) =
+        secondary_key_offsets(bytes, "ImageCelName", None, key_index, limits)?
+    else {
+        return Err(Error::InvalidWrite {
+            reason: "secondary ImageCelName curve disappeared after adding its tag string"
+                .to_owned(),
+        });
+    };
+    let tag_offset = offsets.tag.ok_or_else(|| Error::InvalidWrite {
+        reason: "secondary ImageCelName curve has no writable Tag array".to_owned(),
+    })?;
+    bytes[tag_offset..tag_offset + 4].copy_from_slice(&id.to_le_bytes());
+    let Some((updated, _)) = secondary_key_offsets(bytes, "ImageCelName", None, key_index, limits)?
+    else {
+        return Err(Error::InvalidWrite {
+            reason: "secondary ImageCelName curve disappeared after replacement".to_owned(),
+        });
+    };
+    if updated.tag.as_deref() != Some(tag) {
+        return Err(Error::InvalidWrite {
+            reason: "secondary cel tag replacement did not round-trip".to_owned(),
+        });
+    }
+    Ok(Some(original.tag.ok_or_else(|| Error::InvalidWrite {
+        reason: "secondary ImageCelName key has no original tag".to_owned(),
+    })?))
+}
+
+#[cfg(feature = "write")]
+fn synchronize_cel_track_value(
+    bytes: &[u8],
+    original_tag: &str,
+    replacement_tag: &str,
+    limits: Limits,
+) -> Result<Option<Vec<u8>>> {
+    let mut entries = parse_track_value_map(bytes, limits)?;
+    let matches = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.name == "ImageCelName")
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if matches.is_empty() {
+        return Ok(None);
+    }
+    let [index] = matches.as_slice() else {
+        return Err(Error::InvalidWrite {
+            reason: "animation track repeats ImageCelName in TrackValueMap".to_owned(),
+        });
+    };
+    let AnimationTrackValue::IndexedText { text, .. } = &mut entries[*index].value else {
+        return Err(Error::InvalidWrite {
+            reason: "animation track ImageCelName current value is not typed text".to_owned(),
+        });
+    };
+    if text != original_tag {
+        return Ok(None);
+    }
+    *text = replacement_tag.to_owned();
+    let encoded = encode_track_value_map(&entries, limits)?;
+    Ok((encoded != bytes).then_some(encoded))
 }
 
 struct AnimationTrackSource {
@@ -2414,10 +4215,14 @@ mod tests {
 
     use flate2::{Compression, write::ZlibEncoder};
     use rusqlite::Connection;
+    #[cfg(feature = "write")]
+    use rusqlite::MAIN_DB;
 
     use super::*;
 
     const IDENTIFIER: &[u8] = b"extrnlid0123456789ABCDEF0123456789ABCDEF";
+    #[cfg(feature = "write")]
+    const SECONDARY_IDENTIFIER: &[u8] = b"secondary0123456789ABCDEF0123456789ABCDEF";
     const LAYER_UUID: [u8; 16] = [0x11; 16];
 
     fn push_u32(bytes: &mut Vec<u8>, value: u32) {
@@ -2813,6 +4618,147 @@ mod tests {
         Database::from_connection(connection).unwrap()
     }
 
+    #[cfg(feature = "write")]
+    fn writable_animation_sample() -> Vec<u8> {
+        fn compressed_body(mixer: &[u8]) -> Vec<u8> {
+            let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+            encoder.write_all(mixer).unwrap();
+            let compressed = encoder.finish().unwrap();
+            let mut body = Vec::with_capacity(compressed.len() + 4);
+            body.extend_from_slice(&(compressed.len() as u32).to_le_bytes());
+            body.extend_from_slice(&compressed);
+            body
+        }
+
+        let primary_mixer = binc();
+        let secondary_mixer = secondary_binc();
+        let primary_body = compressed_body(&primary_mixer);
+        let secondary_body = compressed_body(&secondary_mixer);
+        let first_external_offset = 24 + 16 + 40;
+        let first_external_size = 16 + 16 + IDENTIFIER.len() as u64 + primary_body.len() as u64;
+        let second_external_offset = first_external_offset + first_external_size;
+        let second_external_size =
+            16 + 16 + SECONDARY_IDENTIFIER.len() as u64 + secondary_body.len() as u64;
+        let database_offset = second_external_offset + second_external_size;
+
+        let mut value_map = Vec::new();
+        push_be_u32(&mut value_map, 8);
+        push_be_u32(&mut value_map, 2);
+        push_value_record(&mut value_map, "ImageCelName", "A", 2, &0_u32.to_be_bytes());
+        push_value_record(
+            &mut value_map,
+            "Opacity",
+            "",
+            0,
+            &100.0_f64.to_bits().to_be_bytes(),
+        );
+
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE TimeLine (
+                    MainId INTEGER, BankId INTEGER, NextTimeLine INTEGER,
+                    FirstTrack INTEGER, TimeLineName TEXT, FrameRate REAL,
+                    StartFrame REAL, EndFrame REAL, CurrentFrame REAL
+                 );
+                 INSERT INTO TimeLine VALUES (1, 2, NULL, 1, NULL, 24, 0, 24, 0);
+                 CREATE TABLE AnimationCutBank (
+                    MainId INTEGER, FirstTimeLine INTEGER, Enable INTEGER
+                 );
+                 INSERT INTO AnimationCutBank VALUES (1, 1, 1);
+                 CREATE TABLE Track (
+                    _PW_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                    MainId INTEGER, BankId INTEGER, ItemId INTEGER,
+                    TrackNextIndex INTEGER, TrackActionMixerSize INTEGER,
+                    TrackActionMixer BLOB, TrackActionMixer2Size INTEGER,
+                    TrackActionMixer2 BLOB, TrackValueMap BLOB,
+                    TrackOpen INTEGER, TrackContentOpen INTEGER,
+                    TrackUuid BLOB, LayerUuidWithTrack BLOB,
+                    TrackKind INTEGER, TrackOptionFlag INTEGER,
+                    OpaqueColumn BLOB
+                 );
+                 CREATE TABLE Layer (MainId INTEGER, LayerUuid TEXT);
+                 INSERT INTO Layer VALUES
+                    (5, '11111111-1111-1111-1111-111111111111'),
+                    (6, '22222222-2222-2222-2222-222222222222');
+                 CREATE TABLE ExternalChunk (ExternalID BLOB, Offset INTEGER);",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO Track (
+                    MainId, BankId, ItemId, TrackNextIndex,
+                    TrackActionMixerSize, TrackActionMixer,
+                    TrackActionMixer2Size, TrackActionMixer2, TrackValueMap,
+                    TrackOpen, TrackContentOpen, TrackUuid,
+                    LayerUuidWithTrack, TrackKind, TrackOptionFlag, OpaqueColumn
+                 ) VALUES (
+                    1, 2, 1, 0, ?5, ?1, ?6, ?3, ?4,
+                    0, 0, x'33333333333333333333333333333333',
+                    ?2, 2000, 768, x'DEADBEEF'
+                 )",
+                params![
+                    IDENTIFIER,
+                    LAYER_UUID,
+                    SECONDARY_IDENTIFIER,
+                    value_map,
+                    primary_mixer.len() as i64,
+                    secondary_mixer.len() as i64,
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO ExternalChunk VALUES (?1, ?2), (?3, ?4)",
+                params![
+                    IDENTIFIER,
+                    first_external_offset as i64,
+                    SECONDARY_IDENTIFIER,
+                    second_external_offset as i64,
+                ],
+            )
+            .unwrap();
+        let database = connection.serialize(MAIN_DB).unwrap().to_vec();
+
+        let mut header = Vec::new();
+        push_u64(&mut header, 256);
+        push_u64(&mut header, database_offset);
+        push_u64(&mut header, 16);
+        header.extend_from_slice(&[0x42; 16]);
+
+        let mut primary_external = Vec::new();
+        push_u64(&mut primary_external, IDENTIFIER.len() as u64);
+        primary_external.extend_from_slice(IDENTIFIER);
+        push_u64(&mut primary_external, primary_body.len() as u64);
+        primary_external.extend_from_slice(&primary_body);
+        let mut secondary_external = Vec::new();
+        push_u64(&mut secondary_external, SECONDARY_IDENTIFIER.len() as u64);
+        secondary_external.extend_from_slice(SECONDARY_IDENTIFIER);
+        push_u64(&mut secondary_external, secondary_body.len() as u64);
+        secondary_external.extend_from_slice(&secondary_body);
+
+        let mut bytes = Vec::from(b"CSFCHUNK".as_slice());
+        push_u64(&mut bytes, 0);
+        push_u64(&mut bytes, 24);
+        assert_eq!(push_chunk(&mut bytes, b"CHNKHead", &header), 24);
+        assert_eq!(
+            push_chunk(&mut bytes, b"CHNKExta", &primary_external),
+            first_external_offset
+        );
+        assert_eq!(
+            push_chunk(&mut bytes, b"CHNKExta", &secondary_external),
+            second_external_offset
+        );
+        assert_eq!(
+            push_chunk(&mut bytes, b"CHNKSQLi", &database),
+            database_offset
+        );
+        push_chunk(&mut bytes, b"CHNKFoot", b"");
+        let file_size = bytes.len() as u64;
+        bytes[8..16].copy_from_slice(&file_size.to_be_bytes());
+        bytes
+    }
+
     #[test]
     fn loads_timeline_track_and_cel_curve() {
         let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
@@ -2868,6 +4814,356 @@ mod tests {
         assert_eq!(track.cel_at_frame(0.0, 24.0), Some("A"));
         assert_eq!(track.cel_at_frame(23.0, 24.0), Some("A"));
         assert_eq!(track.cel_at_frame(24.0, 24.0), Some("B"));
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn writes_typed_animation_changes_and_reads_them_back() {
+        let source = writable_animation_sample();
+        let mut clip = ClipFile::open(Cursor::new(source)).unwrap();
+        let mut writer = clip.writer().unwrap();
+
+        assert_eq!(
+            writer
+                .replace_animation_cel_tag(1, 0, "new cel", Limits::default())
+                .unwrap(),
+            "A"
+        );
+        let original = writer
+            .replace_animation_curve_keyframe_numeric(
+                1,
+                "ImageCelName",
+                None,
+                1,
+                AnimationCurveKeyframeValues::new(120.0, 2.0),
+                Limits::default(),
+            )
+            .unwrap();
+        assert_eq!(original.time_60hz(), 60.0);
+        assert_eq!(
+            writer
+                .database()
+                .replace_animation_track_value(
+                    1,
+                    "Opacity",
+                    AnimationTrackValue::Float(75.0),
+                    Limits::default(),
+                )
+                .unwrap(),
+            AnimationTrackValue::Float(100.0)
+        );
+
+        let mut output = Vec::new();
+        writer.write_to(&mut output).unwrap();
+        let mut rewritten = ClipFile::open(Cursor::new(output)).unwrap();
+        rewritten.validate().unwrap();
+        let database = rewritten.open_database().unwrap();
+        rewritten.validate_external_index(&database).unwrap();
+        let animation = rewritten
+            .read_animation(&database, Limits::default())
+            .unwrap()
+            .unwrap();
+        let track = &animation.animation_tracks()[0];
+        assert_eq!(track.curves()[0].keyframes()[0].tag(), Some("new cel"));
+        assert_eq!(track.curves()[0].keyframes()[1].time_60hz(), 120.0);
+        assert_eq!(track.curves()[0].keyframes()[1].value(), 2.0);
+        assert_eq!(
+            track.secondary_curves()[0].keyframes()[0].tag(),
+            Some("new cel")
+        );
+        assert_eq!(
+            track.secondary_curves()[0].keyframes()[1].time_60hz(),
+            120.0
+        );
+        assert_eq!(track.secondary_curves()[0].keyframes()[1].value(), 2.0);
+        assert_eq!(
+            track
+                .values()
+                .iter()
+                .find(|entry| entry.name() == "ImageCelName")
+                .unwrap()
+                .value(),
+            &AnimationTrackValue::IndexedText {
+                text: "new cel".to_owned(),
+                numeric_value: 0,
+            }
+        );
+        assert_eq!(
+            track
+                .values()
+                .iter()
+                .find(|entry| entry.name() == "Opacity")
+                .unwrap()
+                .value(),
+            &AnimationTrackValue::Float(75.0)
+        );
+
+        let (primary_size, secondary_size): (i64, i64) = database
+            .connection()
+            .query_row(
+                "SELECT TrackActionMixerSize, TrackActionMixer2Size \
+                 FROM Track WHERE MainId = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(primary_size > binc().len() as i64);
+        assert!(secondary_size > secondary_binc().len() as i64);
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn clones_animation_track_with_independent_mixers_and_unknown_columns() {
+        let source = writable_animation_sample();
+        let mut clip = ClipFile::open(Cursor::new(source)).unwrap();
+        let mut writer = clip.writer().unwrap();
+
+        let summary = writer
+            .clone_animation_track_from_template(1, 1, 6, Limits::default())
+            .unwrap();
+        assert_eq!(summary.template_track_id(), 1);
+        assert_eq!(summary.track_id(), 2);
+        assert_eq!(summary.timeline_id(), 1);
+        assert_eq!(summary.layer_id(), 6);
+        assert_eq!(summary.track_uuid()[6] >> 4, 4);
+        assert_eq!(summary.track_uuid()[8] >> 6, 2);
+        assert_eq!(writer.addition_count(), 2);
+        for identifier in [
+            summary.primary_mixer_identifier().unwrap(),
+            summary.secondary_mixer_identifier().unwrap(),
+        ] {
+            assert_eq!(identifier.len(), 40);
+            assert!(identifier.starts_with(b"extrnlid"));
+            assert!(
+                identifier[8..]
+                    .iter()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'A'..=b'F'))
+            );
+            assert_ne!(identifier, IDENTIFIER);
+            assert_ne!(identifier, SECONDARY_IDENTIFIER);
+        }
+        assert_ne!(
+            summary.primary_mixer_identifier(),
+            summary.secondary_mixer_identifier()
+        );
+
+        let row = writer
+            .database()
+            .connection()
+            .query_row(
+                "SELECT template.TrackNextIndex, clone.TrackNextIndex,
+                        clone.BankId, clone.LayerUuidWithTrack, clone.TrackUuid,
+                        clone.OpaqueColumn = template.OpaqueColumn,
+                        clone._PW_ID != template._PW_ID,
+                        clone.TrackActionMixerSize = template.TrackActionMixerSize,
+                        clone.TrackActionMixer2Size = template.TrackActionMixer2Size
+                 FROM Track AS template JOIN Track AS clone
+                 WHERE template.MainId = 1 AND clone.MainId = 2",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, Vec<u8>>(3)?,
+                        row.get::<_, Vec<u8>>(4)?,
+                        row.get::<_, bool>(5)?,
+                        row.get::<_, bool>(6)?,
+                        row.get::<_, bool>(7)?,
+                        row.get::<_, bool>(8)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(row.0, 2);
+        assert_eq!(row.1, 0);
+        assert_eq!(row.2, 2);
+        assert_eq!(row.3, vec![0x22; 16]);
+        assert_eq!(row.4, summary.track_uuid());
+        assert!(row.5);
+        assert!(row.6);
+        assert!(row.7);
+        assert!(row.8);
+
+        assert_eq!(
+            writer
+                .replace_animation_cel_tag(2, 0, "clone", Limits::default())
+                .unwrap(),
+            "A"
+        );
+        let mut output = Vec::new();
+        let write_summary = writer.write_to(&mut output).unwrap();
+        assert_eq!(write_summary.added_external_bodies(), 2);
+
+        let mut rewritten = ClipFile::open(Cursor::new(output)).unwrap();
+        rewritten.validate().unwrap();
+        let database = rewritten.open_database().unwrap();
+        database.quick_check().unwrap();
+        rewritten.validate_external_index(&database).unwrap();
+        assert_eq!(database.external_chunks().unwrap().len(), 4);
+        let animation = rewritten
+            .read_animation(&database, Limits::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(animation.animation_tracks().len(), 2);
+        assert_eq!(
+            animation.track_for_layer(5).unwrap().keyframes()[0].tag(),
+            "A"
+        );
+        assert_eq!(
+            animation.track_for_layer(6).unwrap().keyframes()[0].tag(),
+            "clone"
+        );
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn rolls_back_cloned_mixers_when_track_insert_fails() {
+        let source = writable_animation_sample();
+        let mut clip = ClipFile::open(Cursor::new(source)).unwrap();
+        let mut writer = clip.writer().unwrap();
+        writer
+            .database()
+            .connection()
+            .execute(
+                "CREATE UNIQUE INDEX unique_opaque_track_test ON Track(OpaqueColumn)",
+                [],
+            )
+            .unwrap();
+
+        assert!(
+            writer
+                .clone_animation_track_from_template(1, 1, 6, Limits::default())
+                .is_err()
+        );
+        assert_eq!(writer.addition_count(), 0);
+        assert_eq!(
+            writer
+                .database()
+                .connection()
+                .query_row("SELECT count(*) FROM Track", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            writer
+                .database()
+                .connection()
+                .query_row(
+                    "SELECT TrackNextIndex FROM Track WHERE MainId = 1",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn rejects_track_clone_for_an_already_tracked_layer() {
+        let source = writable_animation_sample();
+        let mut clip = ClipFile::open(Cursor::new(source)).unwrap();
+        let mut writer = clip.writer().unwrap();
+
+        assert!(matches!(
+            writer.clone_animation_track_from_template(1, 1, 5, Limits::default()),
+            Err(Error::InvalidWrite { .. })
+        ));
+        assert_eq!(writer.addition_count(), 0);
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn rejects_animation_mixer_aliases_across_tracks_and_columns() {
+        fn database(
+            target_secondary: &[u8],
+            other_primary: Option<&[u8]>,
+            other_secondary: Option<&[u8]>,
+        ) -> Database {
+            let connection = Connection::open_in_memory().unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE Track (
+                        MainId INTEGER,
+                        TrackActionMixer BLOB,
+                        TrackActionMixer2 BLOB
+                     );",
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO Track VALUES (1, ?1, ?2)",
+                    params![IDENTIFIER, target_secondary],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO Track VALUES (2, ?1, ?2)",
+                    params![other_primary, other_secondary],
+                )
+                .unwrap();
+            Database::from_connection(connection).unwrap()
+        }
+
+        let clean = database(SECONDARY_IDENTIFIER, None, None);
+        let source = writable_animation_track(clean.connection(), clean.schema(), 1).unwrap();
+        validate_unique_animation_mixers(clean.connection(), clean.schema(), 1, &source).unwrap();
+
+        for aliased in [
+            database(SECONDARY_IDENTIFIER, Some(IDENTIFIER), None),
+            database(SECONDARY_IDENTIFIER, Some(SECONDARY_IDENTIFIER), None),
+            database(SECONDARY_IDENTIFIER, None, Some(IDENTIFIER)),
+        ] {
+            let source =
+                writable_animation_track(aliased.connection(), aliased.schema(), 1).unwrap();
+            assert!(matches!(
+                validate_unique_animation_mixers(
+                    aliased.connection(),
+                    aliased.schema(),
+                    1,
+                    &source
+                ),
+                Err(Error::InvalidWrite { .. })
+            ));
+        }
+
+        let same_row = database(IDENTIFIER, None, None);
+        let source = writable_animation_track(same_row.connection(), same_row.schema(), 1).unwrap();
+        assert!(matches!(
+            validate_unique_animation_mixers(same_row.connection(), same_row.schema(), 1, &source),
+            Err(Error::InvalidWrite { .. })
+        ));
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn enforces_animation_limits_after_mixer_encoding() {
+        let domain_limits = Limits::default().with_max_animation_bytes(1);
+        assert!(matches!(
+            encode_writable_mixer(&[0], domain_limits),
+            Err(Error::LimitExceeded {
+                resource: "encoded animation mixer external body",
+                limit: 1,
+                ..
+            })
+        ));
+
+        let source = writable_animation_sample();
+        let mut clip = ClipFile::open_with_limits(
+            Cursor::new(source),
+            Limits::default().with_max_write_external_body_size(8),
+        )
+        .unwrap();
+        let writer = clip.writer().unwrap();
+        assert!(matches!(
+            encode_writable_mixer_for_writer(&writer, &[0], Limits::default()),
+            Err(Error::LimitExceeded {
+                resource: "encoded animation mixer external body",
+                limit: 8,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -3016,6 +5312,65 @@ mod tests {
                 payload: Box::from([1, 2, 3]),
             }
         );
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn rebuilds_typed_values_and_patches_only_known_curve_fields() {
+        let mut values = parse_track_value_map(&track_value_map(), Limits::default()).unwrap();
+        values[0].value = AnimationTrackValue::IndexedText {
+            text: "C".to_owned(),
+            numeric_value: 2,
+        };
+        let encoded = encode_track_value_map(&values, Limits::default()).unwrap();
+        assert_eq!(
+            parse_track_value_map(&encoded, Limits::default()).unwrap(),
+            values
+        );
+
+        let mut primary = binc();
+        let original = patch_primary_curve_numeric(
+            &mut primary,
+            "ImageCelName",
+            None,
+            1,
+            120.0,
+            2.0,
+            Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(original.time_60hz(), 60.0);
+        assert_eq!(original.value(), 1.0);
+        assert_eq!(
+            patch_primary_curve_tag(&mut primary, 0, "new cel", Limits::default()).unwrap(),
+            "A"
+        );
+        let curve = parse_animation_curves(&primary, Limits::default()).unwrap();
+        assert_eq!(curve[0].keyframes()[0].tag(), Some("new cel"));
+        assert_eq!(curve[0].keyframes()[1].time_60hz(), 120.0);
+        assert_eq!(curve[0].keyframes()[1].value(), 2.0);
+        assert_eq!(curve[0].keyframes()[1].interpolation(), Some("Linear"));
+
+        let mut secondary = secondary_binc();
+        patch_secondary_curve_numeric(
+            &mut secondary,
+            "ImageCelName",
+            None,
+            1,
+            120.0,
+            2.0,
+            Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            patch_secondary_curve_tag(&mut secondary, 0, "new cel", Limits::default()).unwrap(),
+            Some("A".to_owned())
+        );
+        let curve = parse_secondary_animation_curves(&secondary, Limits::default()).unwrap();
+        assert_eq!(curve[0].keyframes()[0].tag(), Some("new cel"));
+        assert_eq!(curve[0].keyframes()[1].time_60hz(), 120.0);
+        assert_eq!(curve[0].keyframes()[1].value(), 2.0);
+        assert_eq!(curve[0].keyframes()[1].interpolation(), Some("Linear"));
     }
 
     #[test]

@@ -21,7 +21,7 @@ mod external;
 mod limits;
 #[cfg(feature = "sqlite")]
 mod model;
-#[cfg(feature = "raster")]
+#[cfg(any(feature = "raster", feature = "write"))]
 mod raster;
 #[cfg(feature = "sqlite")]
 mod ruler;
@@ -34,12 +34,14 @@ mod vector;
 #[cfg(feature = "write")]
 mod writer;
 
+#[cfg(all(feature = "animation", feature = "write"))]
+pub use animation::AnimationTrackCloneSummary;
 #[cfg(feature = "animation")]
 pub use animation::{
-    Animation, AnimationCurve, AnimationCurveKeyframe, AnimationTrack, AnimationTrackKind,
-    AnimationTrackValue, AnimationTrackValueEntry, Camera2DLayerData, Camera2DPoint,
-    Camera2DTrackValues, Camera2DTransform, CelKeyframe, CelTrack, SecondaryAnimationCurve,
-    SecondaryAnimationCurveKeyframe, Timeline,
+    Animation, AnimationCurve, AnimationCurveKeyframe, AnimationCurveKeyframeValues,
+    AnimationTrack, AnimationTrackKind, AnimationTrackValue, AnimationTrackValueEntry,
+    Camera2DLayerData, Camera2DPoint, Camera2DTrackValues, Camera2DTransform, CelKeyframe,
+    CelTrack, SecondaryAnimationCurve, SecondaryAnimationCurveKeyframe, Timeline,
 };
 #[cfg(feature = "sqlite")]
 pub use cmc::{CmcFile, CmcNode};
@@ -74,6 +76,8 @@ pub use raster::{
 pub use ruler::{
     Ruler, RulerCurveData, RulerCurvePoint, RulerKind, RulerLayerData, RulerPoint, RulerVanishPoint,
 };
+#[cfg(feature = "write")]
+pub use text::TextObjectWriteSummary;
 #[cfg(feature = "sqlite")]
 pub use text::{TextLayerData, TextObjectData};
 #[cfg(feature = "timelapse")]
@@ -82,6 +86,10 @@ pub use timelapse::{
 };
 #[cfg(feature = "sqlite")]
 pub use vector::VectorDataSource;
+#[cfg(feature = "write")]
+pub use vector::VectorTranslationSummary;
+#[cfg(all(feature = "write", feature = "raster"))]
+pub use writer::RasterWriteSummary;
 #[cfg(feature = "write")]
 pub use writer::{
     BlockChecksumMode, BlockWriteSummary, ClipWriter, EditableDatabase, WriteSummary,

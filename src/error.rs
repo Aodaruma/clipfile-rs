@@ -135,13 +135,13 @@ pub enum Error {
         reason: String,
     },
     /// Raster metadata or decoded pixels are structurally inconsistent.
-    #[cfg(feature = "raster")]
+    #[cfg(any(feature = "raster", feature = "write"))]
     InvalidRaster {
         /// Human-readable details.
         reason: String,
     },
     /// The raster uses a pixel layout that is recognized but not supported.
-    #[cfg(feature = "raster")]
+    #[cfg(any(feature = "raster", feature = "write"))]
     UnsupportedRaster {
         /// Human-readable details.
         reason: String,
@@ -250,9 +250,9 @@ impl fmt::Display for Error {
             Self::InvalidRuler { reason } => {
                 write!(formatter, "invalid ruler data: {reason}")
             }
-            #[cfg(feature = "raster")]
+            #[cfg(any(feature = "raster", feature = "write"))]
             Self::InvalidRaster { reason } => write!(formatter, "invalid raster data: {reason}"),
-            #[cfg(feature = "raster")]
+            #[cfg(any(feature = "raster", feature = "write"))]
             Self::UnsupportedRaster { reason } => {
                 write!(formatter, "unsupported raster layout: {reason}")
             }

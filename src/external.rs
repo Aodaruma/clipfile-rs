@@ -1,3 +1,5 @@
+#[cfg(feature = "write")]
+use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 #[cfg(feature = "write")]
@@ -709,24 +711,52 @@ fn ensure_file_range(file_size: u64, offset: u64, size: u64) -> Result<()> {
 }
 
 #[cfg(feature = "write")]
-pub(crate) struct RebuiltBlockData {
-    pub(crate) body: Vec<u8>,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BlockChecksumPolicy {
+    Zero,
+    CspCompatible,
+}
+
+#[cfg(feature = "write")]
+impl BlockChecksumPolicy {
+    fn checksum(self, compressed: &[u8]) -> Result<u32> {
+        match self {
+            Self::Zero => Ok(0),
+            Self::CspCompatible => csp_block_checksum(compressed),
+        }
+    }
+}
+
+#[cfg(feature = "write")]
+pub(crate) struct RebuiltBlockSummary {
+    pub(crate) block_index: u32,
     pub(crate) decoded_size: u64,
     pub(crate) original_compressed_size: Option<u64>,
     pub(crate) compressed_size: u64,
+    pub(crate) block_record_size: u32,
     pub(crate) original_checksum: u32,
 }
 
 #[cfg(feature = "write")]
-pub(crate) fn rebuild_block_data_body(
+pub(crate) struct RebuiltBlockDataBatch {
+    pub(crate) body: Vec<u8>,
+    pub(crate) blocks: Vec<RebuiltBlockSummary>,
+}
+
+#[cfg(feature = "write")]
+pub(crate) fn rebuild_block_data_body_batch(
     body: &[u8],
-    block_index: u32,
-    decoded: &[u8],
-    replacement_checksum: u32,
+    replacements: &BTreeMap<u32, Vec<u8>>,
+    checksum_policy: BlockChecksumPolicy,
     max_blocks: u64,
     decoded_limit: u64,
     body_limit: u64,
-) -> Result<RebuiltBlockData> {
+) -> Result<RebuiltBlockDataBatch> {
+    if replacements.is_empty() {
+        return Err(Error::InvalidWrite {
+            reason: "batch block replacement is empty".to_owned(),
+        });
+    }
     let body_size = body.len() as u64;
     if body_size > body_limit {
         return Err(Error::LimitExceeded {
@@ -742,56 +772,86 @@ pub(crate) fn rebuild_block_data_body(
     };
     let mut reader = std::io::Cursor::new(body);
     let data = parse_block_data(&mut reader, &header, max_blocks)?;
-    let mut matches = data
-        .blocks()
-        .iter()
-        .filter(|block| block.index() == block_index);
-    let target = matches.next().ok_or_else(|| Error::InvalidWrite {
-        reason: format!("block-data object has no block index {block_index}"),
-    })?;
-    if matches.next().is_some() {
-        return Err(Error::InvalidWrite {
-            reason: format!("block-data object contains duplicate block index {block_index}"),
-        });
+    let mut blocks_by_index = BTreeMap::new();
+    for block in data.blocks() {
+        if blocks_by_index.insert(block.index(), block).is_some() {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "block-data object contains duplicate block index {}",
+                    block.index()
+                ),
+            });
+        }
     }
 
-    let parameters = target.parameters();
-    let expected_size = u64::from(parameters.channel_count())
-        .checked_mul(u64::from(parameters.width()))
-        .and_then(|value| value.checked_mul(u64::from(parameters.height())))
-        .ok_or(Error::OffsetOverflow)?;
-    if expected_size > decoded_limit {
-        return Err(Error::LimitExceeded {
-            resource: "replacement decoded block size",
-            value: expected_size,
-            limit: decoded_limit,
-        });
-    }
-    if decoded.len() as u64 != expected_size {
-        return Err(Error::InvalidWrite {
-            reason: format!(
-                "replacement for block {block_index} has {} decoded bytes, expected {expected_size}",
-                decoded.len()
-            ),
-        });
+    struct PreparedBlock {
+        compressed: Vec<u8>,
+        compressed_size: u64,
+        checksum: u32,
+        decoded_size: u64,
+        original_compressed_size: Option<u64>,
+        original_checksum: u32,
     }
 
-    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
-    encoder.write_all(decoded)?;
-    let compressed = encoder.finish()?;
-    let compressed_size = u64::try_from(compressed.len()).map_err(|_| Error::OffsetOverflow)?;
-    let original_compressed_size = target.payload().map(|payload| payload.compressed_size());
-    let removed_size = original_compressed_size
-        .map(|size| size.checked_add(8).ok_or(Error::OffsetOverflow))
-        .transpose()?
-        .unwrap_or(0);
-    let added_size = compressed_size
-        .checked_add(8)
-        .ok_or(Error::OffsetOverflow)?;
-    let output_size = body_size
-        .checked_sub(removed_size)
-        .and_then(|size| size.checked_add(added_size))
-        .ok_or(Error::OffsetOverflow)?;
+    let mut prepared = BTreeMap::new();
+    let mut output_size = body_size;
+    for (&block_index, decoded) in replacements {
+        let target =
+            blocks_by_index
+                .get(&block_index)
+                .copied()
+                .ok_or_else(|| Error::InvalidWrite {
+                    reason: format!("block-data object has no block index {block_index}"),
+                })?;
+        let parameters = target.parameters();
+        let expected_size = u64::from(parameters.channel_count())
+            .checked_mul(u64::from(parameters.width()))
+            .and_then(|value| value.checked_mul(u64::from(parameters.height())))
+            .ok_or(Error::OffsetOverflow)?;
+        if expected_size > decoded_limit {
+            return Err(Error::LimitExceeded {
+                resource: "replacement decoded block size",
+                value: expected_size,
+                limit: decoded_limit,
+            });
+        }
+        if decoded.len() as u64 != expected_size {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "replacement for block {block_index} has {} decoded bytes, expected {expected_size}",
+                    decoded.len()
+                ),
+            });
+        }
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(decoded)?;
+        let compressed = encoder.finish()?;
+        let compressed_size = u64::try_from(compressed.len()).map_err(|_| Error::OffsetOverflow)?;
+        let checksum = checksum_policy.checksum(&compressed)?;
+        let original_compressed_size = target.payload().map(|payload| payload.compressed_size());
+        let removed_size = original_compressed_size
+            .map(|size| size.checked_add(8).ok_or(Error::OffsetOverflow))
+            .transpose()?
+            .unwrap_or(0);
+        let added_size = compressed_size
+            .checked_add(8)
+            .ok_or(Error::OffsetOverflow)?;
+        output_size = output_size
+            .checked_sub(removed_size)
+            .and_then(|size| size.checked_add(added_size))
+            .ok_or(Error::OffsetOverflow)?;
+        prepared.insert(
+            block_index,
+            PreparedBlock {
+                compressed,
+                compressed_size,
+                checksum,
+                decoded_size: expected_size,
+                original_compressed_size,
+                original_checksum: target.checksum(),
+            },
+        );
+    }
     if output_size > body_limit {
         return Err(Error::LimitExceeded {
             resource: "replacement block-data body size",
@@ -812,7 +872,7 @@ pub(crate) fn rebuild_block_data_body(
             value: output_size,
             limit: body_limit,
         })?;
-
+    let mut block_record_sizes = BTreeMap::new();
     for block in data.blocks() {
         let start = output.len();
         push_u32_be(&mut output, 0);
@@ -820,9 +880,8 @@ pub(crate) fn rebuild_block_data_body(
         output.extend_from_slice(BLOCK_BEGIN);
         push_u32_be(&mut output, block.index());
         output.extend_from_slice(&block.parameters().raw());
-        let is_target = block.index() == block_index;
-        if is_target {
-            push_payload(&mut output, &compressed)?;
+        if let Some(replacement) = prepared.get(&block.index()) {
+            push_payload(&mut output, &replacement.compressed)?;
         } else if let Some(payload) = block.payload() {
             let payload = body_slice(body, payload.offset(), payload.compressed_size())?;
             push_payload(&mut output, payload)?;
@@ -835,6 +894,9 @@ pub(crate) fn rebuild_block_data_body(
             reason: "serialized block exceeds the 32-bit on-disk size".to_owned(),
         })?;
         output[start..start + 4].copy_from_slice(&block_size.to_be_bytes());
+        if prepared.contains_key(&block.index()) {
+            block_record_sizes.insert(block.index(), block_size);
+        }
     }
     push_trailer_values(
         &mut output,
@@ -845,16 +907,14 @@ pub(crate) fn rebuild_block_data_body(
         &mut output,
         BLOCK_CHECKSUM,
         data.blocks().iter().map(|block| {
-            if block.index() == block_index {
-                replacement_checksum
-            } else {
-                block.checksum()
-            }
+            prepared
+                .get(&block.index())
+                .map_or_else(|| block.checksum(), |replacement| replacement.checksum)
         }),
     )?;
     if output.len() as u64 != output_size {
         return Err(Error::InvalidWrite {
-            reason: "serialized block-data body size calculation disagrees with output".to_owned(),
+            reason: "serialized batch block-data size calculation disagrees with output".to_owned(),
         });
     }
 
@@ -865,30 +925,63 @@ pub(crate) fn rebuild_block_data_body(
     };
     let mut validation_reader = std::io::Cursor::new(&output);
     let validated = parse_block_data(&mut validation_reader, &validation_header, max_blocks)?;
-    let validated_target = validated
-        .blocks()
-        .iter()
-        .find(|block| block.index() == block_index)
-        .ok_or_else(|| Error::InvalidWrite {
-            reason: "serialized block-data body lost the replacement block".to_owned(),
-        })?;
-    if validated_target.checksum() != replacement_checksum
-        || validated_target
-            .payload()
-            .is_none_or(|payload| !payload.has_zlib_header())
-    {
-        return Err(Error::InvalidWrite {
-            reason: "serialized replacement block failed validation".to_owned(),
+    let mut summaries = Vec::with_capacity(prepared.len());
+    for (&block_index, replacement) in &prepared {
+        let target = validated
+            .blocks()
+            .iter()
+            .find(|block| block.index() == block_index)
+            .ok_or_else(|| Error::InvalidWrite {
+                reason: format!("serialized block-data lost replacement block {block_index}"),
+            })?;
+        if target.checksum() != replacement.checksum
+            || target
+                .payload()
+                .is_none_or(|payload| !payload.has_zlib_header())
+        {
+            return Err(Error::InvalidWrite {
+                reason: format!("serialized replacement block {block_index} failed validation"),
+            });
+        }
+        summaries.push(RebuiltBlockSummary {
+            block_index,
+            decoded_size: replacement.decoded_size,
+            original_compressed_size: replacement.original_compressed_size,
+            compressed_size: replacement.compressed_size,
+            block_record_size: *block_record_sizes.get(&block_index).ok_or_else(|| {
+                Error::InvalidWrite {
+                    reason: format!(
+                        "serialized replacement block {block_index} lost its record size"
+                    ),
+                }
+            })?,
+            original_checksum: replacement.original_checksum,
         });
     }
-
-    Ok(RebuiltBlockData {
+    Ok(RebuiltBlockDataBatch {
         body: output,
-        decoded_size: expected_size,
-        original_compressed_size,
-        compressed_size,
-        original_checksum: target.checksum(),
+        blocks: summaries,
     })
+}
+
+#[cfg(feature = "write")]
+fn csp_block_checksum(compressed: &[u8]) -> Result<u32> {
+    const MOD_ADLER: u32 = 65_521;
+
+    let compressed_size = u32::try_from(compressed.len()).map_err(|_| Error::InvalidWrite {
+        reason: "compressed replacement block exceeds the 32-bit on-disk size".to_owned(),
+    })?;
+    let mut a = 1_u32;
+    let mut b = 0_u32;
+    for byte in compressed_size
+        .to_le_bytes()
+        .into_iter()
+        .chain(compressed.iter().copied())
+    {
+        a = (a + u32::from(byte)) % MOD_ADLER;
+        b = (b + a) % MOD_ADLER;
+    }
+    Ok((b << 16) | a)
 }
 
 #[cfg(feature = "write")]
@@ -1057,25 +1150,29 @@ mod tests {
 
     #[cfg(feature = "write")]
     #[test]
-    fn rebuilding_one_block_preserves_the_other_block_records() {
+    fn rebuilding_multiple_blocks_preserves_the_other_block_records() {
         let untouched_payload = [0x78, 0x01, 1, 2, 3];
         let mut bytes = Vec::new();
         push_block(&mut bytes, 0, Some(&untouched_payload));
         push_block(&mut bytes, 1, None);
-        push_trailer(&mut bytes, BLOCK_STATUS, &[1, 0]);
-        push_trailer(&mut bytes, BLOCK_CHECKSUM, &[0x1234, 0x5678]);
+        push_block(&mut bytes, 2, None);
+        push_trailer(&mut bytes, BLOCK_STATUS, &[1, 0, 2]);
+        push_trailer(&mut bytes, BLOCK_CHECKSUM, &[0x1234, 0x5678, 0x9abc]);
 
-        let decoded = vec![0_u8; 5 * 256 * 256];
-        let rebuilt = rebuild_block_data_body(
+        let decoded_size = 5 * 256 * 256;
+        let mut replacements = BTreeMap::new();
+        replacements.insert(1, vec![0_u8; decoded_size]);
+        replacements.insert(2, vec![1_u8; decoded_size]);
+        let rebuilt = rebuild_block_data_body_batch(
             &bytes,
-            1,
-            &decoded,
-            0,
+            &replacements,
+            BlockChecksumPolicy::Zero,
             10,
-            decoded.len() as u64,
+            decoded_size as u64,
             1024 * 1024,
         )
         .unwrap();
+        assert_eq!(rebuilt.blocks.len(), 2);
         let header = ExternalChunkHeader {
             identifier: Box::from(&b"id"[..]),
             body_offset: 0,
@@ -1095,6 +1192,18 @@ mod tests {
         assert_eq!(data.blocks()[1].status(), 0);
         assert_eq!(data.blocks()[1].checksum(), 0);
         assert!(data.blocks()[1].payload().unwrap().has_zlib_header());
+        assert_eq!(data.blocks()[2].status(), 2);
+        assert_eq!(data.blocks()[2].checksum(), 0);
+        assert!(data.blocks()[2].payload().unwrap().has_zlib_header());
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn computes_the_csp_block_checksum_over_the_little_endian_length_and_zlib_bytes() {
+        let compressed = [
+            0x78, 0x01, 0x63, 0x64, 0x62, 0x66, 0x01, 0x00, 0x00, 0x18, 0x00, 0x0b,
+        ];
+        assert_eq!(csp_block_checksum(&compressed).unwrap(), 0x1410_0239);
     }
 
     #[test]
