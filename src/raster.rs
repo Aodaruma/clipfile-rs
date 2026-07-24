@@ -1,9 +1,18 @@
+#[cfg(all(feature = "write", feature = "raster"))]
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Seek, SeekFrom};
 
 use flate2::read::ZlibDecoder;
 use rusqlite::{OptionalExtension, params, types::ValueRef};
+#[cfg(all(feature = "write", feature = "raster"))]
+use rusqlite::{params_from_iter, types::Value};
 
 use crate::{Block, BlockParameters, ChunkKind, ClipFile, Database, Error, ExternalBody, Result};
+#[cfg(all(feature = "write", feature = "raster"))]
+use crate::{
+    ClipWriter, Limits,
+    external::{BlockChecksumPolicy, rebuild_block_data_body_batch},
+};
 
 /// The sixteen big-endian values in an `Offscreen.Attribute` packing record.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -496,6 +505,1223 @@ impl<'a> RasterEncoder<'a> {
             }
         }
         Ok(output)
+    }
+}
+
+#[cfg(all(feature = "write", feature = "raster"))]
+impl<R: Read + Seek> ClipWriter<'_, R> {
+    /// Clones one plain raster layer and replaces its base pixels.
+    ///
+    /// The template and destination parent must belong to the same canvas.
+    /// Every unknown column in the template's `Layer`, `Mipmap`,
+    /// `MipmapInfo`, `Offscreen`, and `LayerThumbnail` rows is preserved.
+    /// Row identities, semantic IDs, the layer UUID, external identifiers,
+    /// ownership references, and tree links are regenerated transactionally.
+    ///
+    /// Only the 100% base mipmap receives a new external block-data body.
+    /// Its populated tiles use the CLIP STUDIO PAINT-compatible checksum.
+    /// Observed CLIP files store lower mipmap levels as cache references whose
+    /// identifiers are absent from `ExternalChunk`; this method gives every
+    /// derived level and the thumbnail atlas a fresh absent identifier so no
+    /// pixels from the template can be displayed as a stale cache.
+    ///
+    /// The new layer is inserted as the first child of `parent_layer_id`.
+    /// The template must be a leaf with `LayerType = 1`, no layer mask, one
+    /// valid render-mipmap chain, and one valid render-thumbnail row.
+    pub fn clone_raster_layer_from_template(
+        &mut self,
+        template_layer_id: i64,
+        parent_layer_id: i64,
+        layer_name: impl AsRef<str>,
+        format: PixelFormat,
+        pixels: impl AsRef<[u8]>,
+        limits: Limits,
+    ) -> Result<i64> {
+        let layer_name = layer_name.as_ref();
+        enforce_raster_clone_limit(
+            layer_name.len() as u64,
+            limits.max_text_bytes(),
+            "new raster layer name bytes",
+        )?;
+        let template = RasterLayerTemplate::read(
+            self.database().connection(),
+            template_layer_id,
+            parent_layer_id,
+            limits,
+        )?;
+        let encoder = RasterEncoder::new(
+            &template.levels[0].attributes,
+            format,
+            pixels.as_ref(),
+            limits.max_canvas_dimension(),
+            limits.max_raster_bytes(),
+            limits.max_decompressed_block_size(),
+        )?;
+        let source_body = self.external_body_for_update(
+            &template.base_identifier,
+            limits.max_write_external_body_size(),
+        )?;
+        let mut replacements = BTreeMap::new();
+        for tile_index in 0..encoder.tile_count() {
+            replacements.insert(tile_index, encoder.encode_tile(tile_index, None)?);
+        }
+        let rebuilt = rebuild_block_data_body_batch(
+            &source_body,
+            &replacements,
+            BlockChecksumPolicy::CspCompatible,
+            limits.max_blocks_per_external(),
+            limits.max_decompressed_block_size(),
+            limits.max_write_external_body_size(),
+        )?;
+        if rebuilt.blocks.len() != usize::try_from(encoder.tile_count()).unwrap_or(usize::MAX) {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "rebuilt raster contains {} tiles, expected {}",
+                    rebuilt.blocks.len(),
+                    encoder.tile_count()
+                ),
+            });
+        }
+        let base_attribute = replace_attribute_block_sizes(
+            &template.levels[0].attribute,
+            &rebuilt
+                .blocks
+                .iter()
+                .map(|block| block.block_record_size)
+                .collect::<Vec<_>>(),
+        )?;
+
+        let generated_identifier_count = template
+            .levels
+            .len()
+            .checked_add(1)
+            .ok_or(Error::OffsetOverflow)?;
+        let identifiers = generate_raster_external_identifiers(
+            self.database().connection(),
+            generated_identifier_count,
+            limits,
+        )?;
+        let base_identifier = identifiers[0].clone();
+        self.add_external_body(&base_identifier, rebuilt.body)?;
+
+        let insertion = RasterLayerCloneInsertion::prepare(
+            self.database().connection(),
+            &template,
+            layer_name,
+            base_attribute,
+            identifiers,
+            limits,
+        );
+        let result = insertion.and_then(|insertion| {
+            insert_raster_layer_clone(self.database_mut().connection_mut(), insertion)
+        });
+        match result {
+            Ok(layer_id) => Ok(layer_id),
+            Err(error) => {
+                if self.unstage_new_external_body(&base_identifier).is_none() {
+                    return Err(Error::InvalidWrite {
+                        reason:
+                            "raster clone failed and its staged external body could not be rolled back"
+                                .to_owned(),
+                    });
+                }
+                Err(error)
+            }
+        }
+    }
+}
+
+#[cfg(all(feature = "write", feature = "raster"))]
+#[derive(Clone, Copy)]
+enum RasterBlockDataStorage {
+    Text,
+    Blob,
+}
+
+#[cfg(all(feature = "write", feature = "raster"))]
+impl RasterBlockDataStorage {
+    fn value(self, identifier: &[u8]) -> Result<Value> {
+        match self {
+            Self::Text => Ok(Value::Text(
+                String::from_utf8(identifier.to_vec()).map_err(|_| Error::InvalidWrite {
+                    reason: "generated raster external identifier is not valid UTF-8".to_owned(),
+                })?,
+            )),
+            Self::Blob => Ok(Value::Blob(identifier.to_vec())),
+        }
+    }
+}
+
+#[cfg(all(feature = "write", feature = "raster"))]
+struct RasterMipmapTemplate {
+    info_id: i64,
+    offscreen_id: i64,
+    attribute: Vec<u8>,
+    attributes: OffscreenAttributes,
+    block_data_storage: RasterBlockDataStorage,
+}
+
+#[cfg(all(feature = "write", feature = "raster"))]
+struct RasterLayerTemplate {
+    layer_id: i64,
+    canvas_id: i64,
+    parent_layer_id: i64,
+    parent_first_child: i64,
+    mipmap_id: i64,
+    thumbnail_id: i64,
+    thumbnail_offscreen_id: i64,
+    thumbnail_block_data_storage: RasterBlockDataStorage,
+    levels: Vec<RasterMipmapTemplate>,
+    base_identifier: Vec<u8>,
+}
+
+#[cfg(all(feature = "write", feature = "raster"))]
+impl RasterLayerTemplate {
+    fn read(
+        connection: &rusqlite::Connection,
+        layer_id: i64,
+        parent_layer_id: i64,
+        limits: Limits,
+    ) -> Result<Self> {
+        for (table, columns) in [
+            (
+                "Layer",
+                &[
+                    "MainId",
+                    "CanvasId",
+                    "LayerName",
+                    "LayerType",
+                    "LayerFolder",
+                    "LayerSelect",
+                    "LayerNextIndex",
+                    "LayerFirstChildIndex",
+                    "LayerRenderMipmap",
+                    "LayerLayerMaskMipmap",
+                    "LayerRenderThumbnail",
+                    "LayerLayerMaskThumbnail",
+                    "LayerUuid",
+                ][..],
+            ),
+            (
+                "Mipmap",
+                &[
+                    "MainId",
+                    "CanvasId",
+                    "LayerId",
+                    "MipmapCount",
+                    "BaseMipmapInfo",
+                ][..],
+            ),
+            (
+                "MipmapInfo",
+                &[
+                    "MainId",
+                    "CanvasId",
+                    "LayerId",
+                    "ThisScale",
+                    "Offscreen",
+                    "NextIndex",
+                ][..],
+            ),
+            (
+                "Offscreen",
+                &["MainId", "CanvasId", "LayerId", "Attribute", "BlockData"][..],
+            ),
+            (
+                "LayerThumbnail",
+                &["MainId", "CanvasId", "LayerId", "ThumbnailOffscreen"][..],
+            ),
+            ("Canvas", &["MainId", "CanvasRootFolder"][..]),
+            ("ElemScheme", &["TableName", "MaxIndex"][..]),
+        ] {
+            require_raster_clone_columns(connection, table, columns)?;
+            cloneable_table_columns(connection, table)?;
+        }
+        let layer_count: i64 =
+            connection.query_row("SELECT count(*) FROM Layer", [], |row| row.get(0))?;
+        let resulting_count = u64::try_from(layer_count)
+            .ok()
+            .and_then(|count| count.checked_add(1))
+            .ok_or(Error::OffsetOverflow)?;
+        enforce_raster_clone_limit(
+            resulting_count,
+            limits.max_layers(),
+            "layers after raster clone",
+        )?;
+        let parent_depth = validate_raster_canvas_tree(connection, parent_layer_id, limits)?;
+        let new_layer_depth = parent_depth.checked_add(1).ok_or(Error::OffsetOverflow)?;
+        enforce_raster_clone_limit(
+            new_layer_depth,
+            limits.max_layer_tree_depth(),
+            "new raster layer tree depth",
+        )?;
+
+        let (
+            canvas_id,
+            layer_type,
+            layer_folder,
+            first_child,
+            mipmap_id,
+            mask_mipmap_id,
+            thumbnail_id,
+            mask_thumbnail_id,
+        ): (i64, i64, i64, i64, i64, i64, i64, i64) = query_unique_raster_row(
+            connection,
+            "Layer",
+            layer_id,
+            "SELECT CanvasId, LayerType, LayerFolder, \
+             coalesce(LayerFirstChildIndex, 0), coalesce(LayerRenderMipmap, 0), \
+             coalesce(LayerLayerMaskMipmap, 0), coalesce(LayerRenderThumbnail, 0), \
+             coalesce(LayerLayerMaskThumbnail, 0) FROM Layer WHERE MainId = ?1",
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            },
+        )?;
+        if layer_type != 1
+            || layer_folder != 0
+            || first_child != 0
+            || mipmap_id <= 0
+            || thumbnail_id <= 0
+            || mask_mipmap_id != 0
+            || mask_thumbnail_id != 0
+        {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "raster template layer {layer_id} is not a plain unmasked pixel leaf"
+                ),
+            });
+        }
+        let (parent_canvas_id, parent_folder, parent_first_child): (i64, i64, i64) =
+            query_unique_raster_row(
+                connection,
+                "Layer",
+                parent_layer_id,
+                "SELECT CanvasId, LayerFolder, coalesce(LayerFirstChildIndex, 0) \
+                 FROM Layer WHERE MainId = ?1",
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        if parent_canvas_id != canvas_id || parent_folder == 0 {
+            return Err(Error::InvalidWrite {
+                reason: "raster clone parent is not a folder on the template canvas".to_owned(),
+            });
+        }
+
+        let (mipmap_canvas_id, mipmap_layer_id, mipmap_count, mut current): (i64, i64, i64, i64) =
+            query_unique_raster_row(
+                connection,
+                "Mipmap",
+                mipmap_id,
+                "SELECT CanvasId, LayerId, MipmapCount, BaseMipmapInfo \
+             FROM Mipmap WHERE MainId = ?1",
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+        if mipmap_canvas_id != canvas_id || mipmap_layer_id != layer_id || mipmap_count <= 0 {
+            return Err(Error::InvalidWrite {
+                reason: "raster template Mipmap ownership or count is invalid".to_owned(),
+            });
+        }
+        enforce_raster_clone_limit(
+            u64::try_from(mipmap_count).unwrap_or(u64::MAX),
+            limits.max_layers(),
+            "raster mipmap levels",
+        )?;
+        let mut seen = BTreeSet::new();
+        let mut levels = Vec::new();
+        let mut previous_scale = f64::INFINITY;
+        let mut base_identifier = None;
+        while current != 0 {
+            if !seen.insert(current) {
+                return Err(Error::InvalidWrite {
+                    reason: "raster template MipmapInfo chain contains a cycle".to_owned(),
+                });
+            }
+            let (info_canvas_id, info_layer_id, scale, offscreen_id, next): (
+                i64,
+                i64,
+                f64,
+                i64,
+                i64,
+            ) = query_unique_raster_row(
+                connection,
+                "MipmapInfo",
+                current,
+                "SELECT CanvasId, LayerId, ThisScale, Offscreen, coalesce(NextIndex, 0) \
+                 FROM MipmapInfo WHERE MainId = ?1",
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )?;
+            if info_canvas_id != canvas_id
+                || info_layer_id != layer_id
+                || !scale.is_finite()
+                || scale <= 0.0
+                || scale >= previous_scale
+                || offscreen_id <= 0
+            {
+                return Err(Error::InvalidWrite {
+                    reason: "raster template MipmapInfo chain metadata is invalid".to_owned(),
+                });
+            }
+            if levels.is_empty() && scale != 100.0 {
+                return Err(Error::InvalidWrite {
+                    reason: format!("raster template base mipmap scale is {scale}, expected 100"),
+                });
+            }
+            let (offscreen_canvas_id, offscreen_layer_id, attribute, block_data): (
+                i64,
+                i64,
+                Vec<u8>,
+                Value,
+            ) = query_unique_raster_row(
+                connection,
+                "Offscreen",
+                offscreen_id,
+                "SELECT CanvasId, LayerId, Attribute, BlockData \
+                 FROM Offscreen WHERE MainId = ?1",
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            if offscreen_canvas_id != canvas_id || offscreen_layer_id != layer_id {
+                return Err(Error::InvalidWrite {
+                    reason: "raster template Offscreen ownership is invalid".to_owned(),
+                });
+            }
+            let attributes = OffscreenAttributes::parse(&attribute)?;
+            let block_data = raster_block_data(block_data)?;
+            let block_data_storage = block_data
+                .as_ref()
+                .map_or(RasterBlockDataStorage::Blob, |(_, storage)| *storage);
+            if levels.is_empty() {
+                let identifier = block_data
+                    .as_ref()
+                    .map(|(identifier, _)| identifier)
+                    .filter(|identifier| !identifier.is_empty())
+                    .ok_or_else(|| Error::InvalidWrite {
+                        reason: "raster template base Offscreen has no external identifier"
+                            .to_owned(),
+                    })?;
+                base_identifier = Some(identifier.clone());
+            }
+            levels.push(RasterMipmapTemplate {
+                info_id: current,
+                offscreen_id,
+                attribute,
+                attributes,
+                block_data_storage,
+            });
+            previous_scale = scale;
+            current = next;
+        }
+        if levels.len() != usize::try_from(mipmap_count).unwrap_or(usize::MAX) {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "raster template Mipmap declares {mipmap_count} levels but its chain has {}",
+                    levels.len()
+                ),
+            });
+        }
+        let base_identifier = base_identifier.ok_or_else(|| Error::InvalidWrite {
+            reason: "raster template has no base external identifier".to_owned(),
+        })?;
+        enforce_raster_clone_limit(
+            base_identifier.len() as u64,
+            limits.max_identifier_size(),
+            "raster base external identifier",
+        )?;
+
+        let (thumbnail_canvas_id, thumbnail_layer_id, thumbnail_offscreen_id): (i64, i64, i64) =
+            query_unique_raster_row(
+                connection,
+                "LayerThumbnail",
+                thumbnail_id,
+                "SELECT CanvasId, LayerId, ThumbnailOffscreen \
+                 FROM LayerThumbnail WHERE MainId = ?1",
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        if thumbnail_canvas_id != canvas_id
+            || thumbnail_layer_id != layer_id
+            || thumbnail_offscreen_id <= 0
+        {
+            return Err(Error::InvalidWrite {
+                reason: "raster template LayerThumbnail ownership is invalid".to_owned(),
+            });
+        }
+        let (thumb_canvas_id, thumb_layer_id, thumb_attribute, thumbnail_block_data): (
+            i64,
+            i64,
+            Vec<u8>,
+            Value,
+        ) = query_unique_raster_row(
+            connection,
+            "Offscreen",
+            thumbnail_offscreen_id,
+            "SELECT CanvasId, LayerId, Attribute, BlockData \
+                 FROM Offscreen WHERE MainId = ?1",
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        if thumb_canvas_id != canvas_id || thumb_layer_id != layer_id {
+            return Err(Error::InvalidWrite {
+                reason: "raster template thumbnail Offscreen ownership is invalid".to_owned(),
+            });
+        }
+        OffscreenAttributes::parse(&thumb_attribute)?;
+        let thumbnail_block_data_storage = raster_block_data(thumbnail_block_data)?
+            .map_or(RasterBlockDataStorage::Blob, |(_, storage)| storage);
+
+        Ok(Self {
+            layer_id,
+            canvas_id,
+            parent_layer_id,
+            parent_first_child,
+            mipmap_id,
+            thumbnail_id,
+            thumbnail_offscreen_id,
+            thumbnail_block_data_storage,
+            levels,
+            base_identifier,
+        })
+    }
+}
+
+#[cfg(all(feature = "write", feature = "raster"))]
+struct RasterLayerCloneInsertion<'a> {
+    template: &'a RasterLayerTemplate,
+    layer_name: &'a str,
+    layer_id: i64,
+    layer_uuid: String,
+    mipmap_id: i64,
+    mipmap_info_ids: Vec<i64>,
+    offscreen_ids: Vec<i64>,
+    thumbnail_id: i64,
+    thumbnail_offscreen_id: i64,
+    base_attribute: Vec<u8>,
+    identifiers: Vec<Vec<u8>>,
+    table_columns: BTreeMap<&'static str, Vec<String>>,
+    elem_scheme_maxima: BTreeMap<&'static str, i64>,
+}
+
+#[cfg(all(feature = "write", feature = "raster"))]
+impl<'a> RasterLayerCloneInsertion<'a> {
+    fn prepare(
+        connection: &rusqlite::Connection,
+        template: &'a RasterLayerTemplate,
+        layer_name: &'a str,
+        base_attribute: Vec<u8>,
+        identifiers: Vec<Vec<u8>>,
+        limits: Limits,
+    ) -> Result<Self> {
+        if identifiers.len() != template.levels.len() + 1 {
+            return Err(Error::InvalidWrite {
+                reason: "raster clone identifier allocation count is inconsistent".to_owned(),
+            });
+        }
+        let mut table_columns = BTreeMap::new();
+        for table in [
+            "Layer",
+            "Mipmap",
+            "MipmapInfo",
+            "Offscreen",
+            "LayerThumbnail",
+        ] {
+            table_columns.insert(table, cloneable_table_columns(connection, table)?);
+        }
+        let (layer_id, layer_max) = allocate_raster_ids(connection, "Layer", 1)?;
+        let (mipmap_id, mipmap_max) = allocate_raster_ids(connection, "Mipmap", 1)?;
+        let (mipmap_info_start, mipmap_info_max) =
+            allocate_raster_ids(connection, "MipmapInfo", template.levels.len())?;
+        let offscreen_count = template
+            .levels
+            .len()
+            .checked_add(1)
+            .ok_or(Error::OffsetOverflow)?;
+        let (offscreen_start, offscreen_max) =
+            allocate_raster_ids(connection, "Offscreen", offscreen_count)?;
+        let (thumbnail_id, thumbnail_max) = allocate_raster_ids(connection, "LayerThumbnail", 1)?;
+        let mipmap_info_ids = sequential_raster_ids(mipmap_info_start, template.levels.len())?;
+        let offscreen_ids = sequential_raster_ids(offscreen_start, template.levels.len())?;
+        let thumbnail_offscreen_id = offscreen_start
+            .checked_add(i64::try_from(template.levels.len()).map_err(|_| Error::OffsetOverflow)?)
+            .ok_or(Error::OffsetOverflow)?;
+        let layer_uuid = generate_raster_layer_uuid(connection, limits)?;
+        Ok(Self {
+            template,
+            layer_name,
+            layer_id,
+            layer_uuid,
+            mipmap_id,
+            mipmap_info_ids,
+            offscreen_ids,
+            thumbnail_id,
+            thumbnail_offscreen_id,
+            base_attribute,
+            identifiers,
+            table_columns,
+            elem_scheme_maxima: BTreeMap::from([
+                ("Layer", layer_max),
+                ("Mipmap", mipmap_max),
+                ("MipmapInfo", mipmap_info_max),
+                ("Offscreen", offscreen_max),
+                ("LayerThumbnail", thumbnail_max),
+            ]),
+        })
+    }
+}
+
+#[cfg(all(feature = "write", feature = "raster"))]
+fn insert_raster_layer_clone(
+    connection: &mut rusqlite::Connection,
+    insertion: RasterLayerCloneInsertion<'_>,
+) -> Result<i64> {
+    let transaction = connection.transaction()?;
+
+    let mut replacements = BTreeMap::from([
+        ("MainId", Value::Integer(insertion.layer_id)),
+        ("LayerName", Value::Text(insertion.layer_name.to_owned())),
+        ("LayerSelect", Value::Integer(0)),
+        (
+            "LayerNextIndex",
+            Value::Integer(insertion.template.parent_first_child),
+        ),
+        ("LayerFirstChildIndex", Value::Integer(0)),
+        ("LayerUuid", Value::Text(insertion.layer_uuid)),
+        ("LayerRenderMipmap", Value::Integer(insertion.mipmap_id)),
+        ("LayerLayerMaskMipmap", Value::Integer(0)),
+        (
+            "LayerRenderThumbnail",
+            Value::Integer(insertion.thumbnail_id),
+        ),
+        ("LayerLayerMaskThumbnail", Value::Integer(0)),
+    ]);
+    insert_raster_clone_row(
+        &transaction,
+        "Layer",
+        &insertion.table_columns["Layer"],
+        insertion.template.layer_id,
+        &replacements,
+    )?;
+    replacements.clear();
+
+    let first_info_id = insertion.mipmap_info_ids[0];
+    replacements.extend([
+        ("MainId", Value::Integer(insertion.mipmap_id)),
+        ("LayerId", Value::Integer(insertion.layer_id)),
+        ("BaseMipmapInfo", Value::Integer(first_info_id)),
+    ]);
+    insert_raster_clone_row(
+        &transaction,
+        "Mipmap",
+        &insertion.table_columns["Mipmap"],
+        insertion.template.mipmap_id,
+        &replacements,
+    )?;
+
+    for (index, template_level) in insertion.template.levels.iter().enumerate() {
+        let next = insertion
+            .mipmap_info_ids
+            .get(index + 1)
+            .copied()
+            .unwrap_or(0);
+        let info_replacements = BTreeMap::from([
+            ("MainId", Value::Integer(insertion.mipmap_info_ids[index])),
+            ("LayerId", Value::Integer(insertion.layer_id)),
+            ("Offscreen", Value::Integer(insertion.offscreen_ids[index])),
+            ("NextIndex", Value::Integer(next)),
+        ]);
+        insert_raster_clone_row(
+            &transaction,
+            "MipmapInfo",
+            &insertion.table_columns["MipmapInfo"],
+            template_level.info_id,
+            &info_replacements,
+        )?;
+        let attribute = if index == 0 {
+            insertion.base_attribute.clone()
+        } else {
+            template_level.attribute.clone()
+        };
+        let block_data = template_level
+            .block_data_storage
+            .value(&insertion.identifiers[index])?;
+        let offscreen_replacements = BTreeMap::from([
+            ("MainId", Value::Integer(insertion.offscreen_ids[index])),
+            ("LayerId", Value::Integer(insertion.layer_id)),
+            ("Attribute", Value::Blob(attribute)),
+            ("BlockData", block_data),
+        ]);
+        insert_raster_clone_row(
+            &transaction,
+            "Offscreen",
+            &insertion.table_columns["Offscreen"],
+            template_level.offscreen_id,
+            &offscreen_replacements,
+        )?;
+    }
+
+    let thumbnail_replacements = BTreeMap::from([
+        ("MainId", Value::Integer(insertion.thumbnail_id)),
+        ("LayerId", Value::Integer(insertion.layer_id)),
+        (
+            "ThumbnailOffscreen",
+            Value::Integer(insertion.thumbnail_offscreen_id),
+        ),
+    ]);
+    insert_raster_clone_row(
+        &transaction,
+        "LayerThumbnail",
+        &insertion.table_columns["LayerThumbnail"],
+        insertion.template.thumbnail_id,
+        &thumbnail_replacements,
+    )?;
+    let thumbnail_block_data = insertion.template.thumbnail_block_data_storage.value(
+        insertion
+            .identifiers
+            .last()
+            .expect("thumbnail identifier count validated"),
+    )?;
+    let thumbnail_offscreen_replacements = BTreeMap::from([
+        ("MainId", Value::Integer(insertion.thumbnail_offscreen_id)),
+        ("LayerId", Value::Integer(insertion.layer_id)),
+        ("BlockData", thumbnail_block_data),
+    ]);
+    insert_raster_clone_row(
+        &transaction,
+        "Offscreen",
+        &insertion.table_columns["Offscreen"],
+        insertion.template.thumbnail_offscreen_id,
+        &thumbnail_offscreen_replacements,
+    )?;
+
+    let updated = transaction.execute(
+        "UPDATE Layer SET LayerFirstChildIndex = ?1 \
+         WHERE MainId = ?2 AND CanvasId = ?3 \
+         AND coalesce(LayerFirstChildIndex, 0) = ?4",
+        params![
+            insertion.layer_id,
+            insertion.template.parent_layer_id,
+            insertion.template.canvas_id,
+            insertion.template.parent_first_child,
+        ],
+    )?;
+    if updated != 1 {
+        return Err(Error::InvalidWrite {
+            reason: "raster clone parent tree link changed during insertion".to_owned(),
+        });
+    }
+    for (table, maximum) in &insertion.elem_scheme_maxima {
+        let updated = transaction.execute(
+            "UPDATE ElemScheme SET MaxIndex = ?1 WHERE TableName = ?2",
+            params![maximum, table],
+        )?;
+        if updated != 1 {
+            return Err(Error::InvalidWrite {
+                reason: format!("ElemScheme {table} update affected {updated} rows"),
+            });
+        }
+    }
+    transaction.commit()?;
+    Ok(insertion.layer_id)
+}
+
+#[cfg(all(feature = "write", feature = "raster"))]
+fn require_raster_clone_columns(
+    connection: &rusqlite::Connection,
+    table: &str,
+    columns: &[&str],
+) -> Result<()> {
+    let available = cloneable_table_columns(connection, table)?;
+    for column in columns {
+        if !available.iter().any(|candidate| candidate == column) {
+            return Err(Error::InvalidWrite {
+                reason: format!("raster clone requires {table}.{column}"),
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "write", feature = "raster"))]
+fn cloneable_table_columns(connection: &rusqlite::Connection, table: &str) -> Result<Vec<String>> {
+    let sql = format!("PRAGMA table_xinfo({})", quote_raster_identifier(table));
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, i64>(6)?,
+        ))
+    })?;
+    let rows = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    if rows.is_empty() {
+        return Err(Error::InvalidWrite {
+            reason: format!("raster clone requires table {table}"),
+        });
+    }
+    let mut columns = Vec::new();
+    let mut regeneratable_primary_key = false;
+    for (name, primary_key_position, hidden) in rows {
+        if name == "_PW_ID" {
+            if primary_key_position == 0 || hidden != 0 {
+                return Err(Error::InvalidWrite {
+                    reason: format!("{table}._PW_ID is not a regeneratable primary key"),
+                });
+            }
+            regeneratable_primary_key = true;
+            continue;
+        }
+        if primary_key_position != 0 {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "raster clone cannot regenerate unexpected {table} primary-key column {name:?}"
+                ),
+            });
+        }
+        if hidden == 0 {
+            columns.push(name);
+        }
+    }
+    if !regeneratable_primary_key || columns.is_empty() {
+        return Err(Error::InvalidWrite {
+            reason: format!("{table} has no safely cloneable row layout"),
+        });
+    }
+    Ok(columns)
+}
+
+#[cfg(all(feature = "write", feature = "raster"))]
+fn insert_raster_clone_row(
+    transaction: &rusqlite::Transaction<'_>,
+    table: &str,
+    columns: &[String],
+    template_id: i64,
+    replacements: &BTreeMap<&str, Value>,
+) -> Result<()> {
+    let column_list = columns
+        .iter()
+        .map(|column| quote_raster_identifier(column))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut values = Vec::new();
+    let selected = columns
+        .iter()
+        .map(|column| {
+            if let Some(value) = replacements.get(column.as_str()) {
+                values.push(value.clone());
+                format!("?{}", values.len())
+            } else {
+                format!("template.{}", quote_raster_identifier(column))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    values.push(Value::Integer(template_id));
+    let sql = format!(
+        "INSERT INTO {} ({column_list}) SELECT {selected} FROM {} AS template \
+         WHERE template.MainId = ?{}",
+        quote_raster_identifier(table),
+        quote_raster_identifier(table),
+        values.len(),
+    );
+    let inserted = transaction.execute(&sql, params_from_iter(values.iter()))?;
+    if inserted != 1 {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "raster template {table} row {template_id} clone inserted {inserted} rows"
+            ),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "write", feature = "raster"))]
+fn allocate_raster_ids(
+    connection: &rusqlite::Connection,
+    table: &'static str,
+    amount: usize,
+) -> Result<(i64, i64)> {
+    if amount == 0 {
+        return Err(Error::InvalidWrite {
+            reason: format!("raster clone requested no {table} IDs"),
+        });
+    }
+    let sql = format!(
+        "SELECT count(*), count(MainId), count(DISTINCT MainId), max(MainId) FROM {}",
+        quote_raster_identifier(table)
+    );
+    let (rows, non_null, distinct, maximum): (i64, i64, i64, Option<i64>) =
+        connection.query_row(&sql, [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?;
+    if rows != non_null || rows != distinct {
+        return Err(Error::InvalidWrite {
+            reason: format!("{table}.MainId contains NULL or duplicate values"),
+        });
+    }
+    let maximum = maximum.unwrap_or(0);
+    if maximum < 0 {
+        return Err(Error::InvalidWrite {
+            reason: format!("{table}.MainId maximum is negative"),
+        });
+    }
+    let (scheme_rows, scheme_max): (i64, Option<i64>) = connection.query_row(
+        "SELECT count(*), max(MaxIndex) FROM ElemScheme WHERE TableName = ?1",
+        [table],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if scheme_rows != 1 {
+        return Err(Error::InvalidWrite {
+            reason: format!("ElemScheme must contain exactly one {table} row, found {scheme_rows}"),
+        });
+    }
+    let scheme_max = scheme_max.ok_or_else(|| Error::InvalidWrite {
+        reason: format!("ElemScheme {table} MaxIndex is NULL"),
+    })?;
+    if scheme_max < maximum {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "ElemScheme {table} MaxIndex {scheme_max} is below MainId maximum {maximum}"
+            ),
+        });
+    }
+    let amount = i64::try_from(amount).map_err(|_| Error::OffsetOverflow)?;
+    let start = scheme_max.checked_add(1).ok_or(Error::OffsetOverflow)?;
+    let resulting_maximum = scheme_max
+        .checked_add(amount)
+        .ok_or(Error::OffsetOverflow)?;
+    if start <= 0 {
+        return Err(Error::InvalidWrite {
+            reason: format!("could not allocate a positive {table}.MainId"),
+        });
+    }
+    Ok((start, resulting_maximum))
+}
+
+#[cfg(all(feature = "write", feature = "raster"))]
+fn sequential_raster_ids(start: i64, count: usize) -> Result<Vec<i64>> {
+    (0..count)
+        .map(|index| {
+            start
+                .checked_add(i64::try_from(index).map_err(|_| Error::OffsetOverflow)?)
+                .ok_or(Error::OffsetOverflow)
+        })
+        .collect()
+}
+
+#[cfg(all(feature = "write", feature = "raster"))]
+fn generate_raster_layer_uuid(connection: &rusqlite::Connection, limits: Limits) -> Result<String> {
+    let mut occupied = BTreeSet::new();
+    let mut statement =
+        connection.prepare("SELECT LayerUuid FROM Layer WHERE LayerUuid IS NOT NULL")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let mut count = 0_u64;
+    for row in rows {
+        count = count.checked_add(1).ok_or(Error::OffsetOverflow)?;
+        enforce_raster_clone_limit(count, limits.max_layers(), "raster layer UUIDs")?;
+        let value = row?;
+        let normalized = normalize_raster_uuid(&value)?;
+        if !occupied.insert(normalized) {
+            return Err(Error::InvalidWrite {
+                reason: "Layer contains duplicate normalized UUIDs".to_owned(),
+            });
+        }
+    }
+    for _ in 0..128 {
+        let mut random: Vec<u8> =
+            connection.query_row("SELECT randomblob(16)", [], |row| row.get(0))?;
+        if random.len() != 16 {
+            return Err(Error::InvalidWrite {
+                reason: "SQLite returned an invalid raster layer UUID seed".to_owned(),
+            });
+        }
+        random[6] = (random[6] & 0x0f) | 0x40;
+        random[8] = (random[8] & 0x3f) | 0x80;
+        let normalized = format_raster_uuid_hex(&random);
+        if occupied.contains(&normalized) {
+            continue;
+        }
+        let standard = format!(
+            "{}-{}-{}-{}-{}",
+            &normalized[0..8],
+            &normalized[8..12],
+            &normalized[12..16],
+            &normalized[16..20],
+            &normalized[20..32],
+        );
+        return Ok(format!("{}{}", &standard[34..36], &standard[..34]));
+    }
+    Err(Error::InvalidWrite {
+        reason: "could not generate a unique raster layer UUID".to_owned(),
+    })
+}
+
+#[cfg(all(feature = "write", feature = "raster"))]
+fn normalize_raster_uuid(value: &str) -> Result<String> {
+    let normalized = value
+        .chars()
+        .filter(|character| character.is_ascii_hexdigit())
+        .map(|character| character.to_ascii_lowercase())
+        .collect::<String>();
+    if normalized.len() != 32 {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "LayerUuid has {} hexadecimal digits instead of 32",
+                normalized.len()
+            ),
+        });
+    }
+    Ok(normalized)
+}
+
+#[cfg(all(feature = "write", feature = "raster"))]
+fn format_raster_uuid_hex(uuid: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::with_capacity(uuid.len() * 2);
+    for byte in uuid {
+        write!(output, "{byte:02x}").expect("writing into a String cannot fail");
+    }
+    output
+}
+
+#[cfg(all(feature = "write", feature = "raster"))]
+fn generate_raster_external_identifiers(
+    connection: &rusqlite::Connection,
+    count: usize,
+    limits: Limits,
+) -> Result<Vec<Vec<u8>>> {
+    enforce_raster_clone_limit(
+        40,
+        limits.max_identifier_size(),
+        "generated raster external identifier",
+    )?;
+    let mut occupied = BTreeSet::new();
+    for (table, column) in [("ExternalChunk", "ExternalID"), ("Offscreen", "BlockData")] {
+        let sql = format!(
+            "SELECT {} FROM {} WHERE {} IS NOT NULL",
+            quote_raster_identifier(column),
+            quote_raster_identifier(table),
+            quote_raster_identifier(column),
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let mut rows = statement.query([])?;
+        let mut row_count = 0_u64;
+        while let Some(row) = rows.next()? {
+            row_count = row_count.checked_add(1).ok_or(Error::OffsetOverflow)?;
+            let combined_limit = limits
+                .max_layers()
+                .checked_mul(16)
+                .ok_or(Error::OffsetOverflow)?;
+            enforce_raster_clone_limit(
+                row_count,
+                combined_limit,
+                "raster external identifier candidates",
+            )?;
+            let identifier = match row.get_ref(0)? {
+                ValueRef::Text(value) | ValueRef::Blob(value) => value.to_vec(),
+                _ => {
+                    return Err(Error::InvalidWrite {
+                        reason: format!("{table}.{column} is neither TEXT nor BLOB"),
+                    });
+                }
+            };
+            occupied.insert(identifier);
+        }
+    }
+    let mut identifiers = Vec::new();
+    while identifiers.len() < count {
+        if identifiers.len().checked_add(128).is_none() {
+            return Err(Error::OffsetOverflow);
+        }
+        let mut generated = false;
+        for _ in 0..128 {
+            let mut random: Vec<u8> =
+                connection.query_row("SELECT randomblob(16)", [], |row| row.get(0))?;
+            if random.len() != 16 {
+                return Err(Error::InvalidWrite {
+                    reason: "SQLite returned an invalid raster external ID seed".to_owned(),
+                });
+            }
+            random[6] = (random[6] & 0x0f) | 0x40;
+            random[8] = (random[8] & 0x3f) | 0x80;
+            let mut identifier = Vec::with_capacity(40);
+            identifier.extend_from_slice(b"extrnlid");
+            for byte in random {
+                identifier.extend_from_slice(format!("{byte:02X}").as_bytes());
+            }
+            if occupied.insert(identifier.clone()) {
+                identifiers.push(identifier);
+                generated = true;
+                break;
+            }
+        }
+        if !generated {
+            return Err(Error::InvalidWrite {
+                reason: "could not generate unique raster external identifiers".to_owned(),
+            });
+        }
+    }
+    Ok(identifiers)
+}
+
+#[cfg(all(feature = "write", feature = "raster"))]
+fn raster_block_data(value: Value) -> Result<Option<(Vec<u8>, RasterBlockDataStorage)>> {
+    match value {
+        Value::Null => Ok(None),
+        Value::Text(value) => Ok(Some((value.into_bytes(), RasterBlockDataStorage::Text))),
+        Value::Blob(value) => Ok(Some((value, RasterBlockDataStorage::Blob))),
+        _ => Err(Error::InvalidWrite {
+            reason: "Offscreen.BlockData is neither NULL, TEXT, nor BLOB".to_owned(),
+        }),
+    }
+}
+
+#[cfg(all(feature = "write", feature = "raster"))]
+fn validate_raster_canvas_tree(
+    connection: &rusqlite::Connection,
+    parent_layer_id: i64,
+    limits: Limits,
+) -> Result<u64> {
+    let (canvas_id, parent_folder): (i64, i64) = query_unique_raster_row(
+        connection,
+        "Layer",
+        parent_layer_id,
+        "SELECT CanvasId, LayerFolder FROM Layer WHERE MainId = ?1",
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if parent_folder == 0 {
+        return Err(Error::InvalidWrite {
+            reason: "raster clone parent is not a folder".to_owned(),
+        });
+    }
+    let root_id: i64 = query_unique_raster_row(
+        connection,
+        "Canvas",
+        canvas_id,
+        "SELECT CanvasRootFolder FROM Canvas WHERE MainId = ?1",
+        |row| row.get(0),
+    )?;
+    let mut statement = connection.prepare(
+        "SELECT MainId, coalesce(LayerFirstChildIndex, 0), \
+         coalesce(LayerNextIndex, 0) FROM Layer WHERE CanvasId = ?1",
+    )?;
+    let rows = statement
+        .query_map([canvas_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    enforce_raster_clone_limit(
+        rows.len() as u64,
+        limits.max_layers(),
+        "raster canvas layers",
+    )?;
+    let mut links = BTreeMap::new();
+    for (id, child, next) in rows {
+        if id <= 0 || links.insert(id, (child, next)).is_some() {
+            return Err(Error::InvalidWrite {
+                reason: "raster canvas tree contains an invalid or duplicate layer ID".to_owned(),
+            });
+        }
+    }
+    if !links.contains_key(&root_id) {
+        return Err(Error::InvalidWrite {
+            reason: "CanvasRootFolder is absent from the raster canvas".to_owned(),
+        });
+    }
+    let mut visited = BTreeSet::new();
+    let mut stack = vec![(root_id, 0_u64)];
+    let mut parent_depth = None;
+    while let Some((id, depth)) = stack.pop() {
+        if depth > limits.max_layer_tree_depth() {
+            return Err(Error::LimitExceeded {
+                resource: "raster layer tree depth",
+                value: depth,
+                limit: limits.max_layer_tree_depth(),
+            });
+        }
+        if !visited.insert(id) {
+            return Err(Error::InvalidWrite {
+                reason: format!("raster canvas tree reaches layer {id} more than once"),
+            });
+        }
+        if id == parent_layer_id {
+            parent_depth = Some(depth);
+        }
+        let (child, next) = links.get(&id).copied().ok_or_else(|| Error::InvalidWrite {
+            reason: format!("raster canvas tree refers to missing layer {id}"),
+        })?;
+        if next != 0 {
+            stack.push((next, depth));
+        }
+        if child != 0 {
+            stack.push((child, depth.checked_add(1).ok_or(Error::OffsetOverflow)?));
+        }
+    }
+    if visited.len() != links.len() || !visited.contains(&parent_layer_id) {
+        return Err(Error::InvalidWrite {
+            reason: "raster canvas tree contains unreachable layers or parent".to_owned(),
+        });
+    }
+    parent_depth.ok_or_else(|| Error::InvalidWrite {
+        reason: "raster clone parent has no resolved tree depth".to_owned(),
+    })
+}
+
+#[cfg(all(feature = "write", feature = "raster"))]
+fn query_unique_raster_row<T, F>(
+    connection: &rusqlite::Connection,
+    table: &str,
+    id: i64,
+    sql: &str,
+    mapper: F,
+) -> Result<T>
+where
+    F: FnOnce(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+{
+    let count_sql = format!(
+        "SELECT count(*) FROM {} WHERE MainId = ?1",
+        quote_raster_identifier(table)
+    );
+    let count: i64 = connection.query_row(&count_sql, [id], |row| row.get(0))?;
+    if count != 1 {
+        return Err(Error::InvalidWrite {
+            reason: format!("{table}.MainId {id} resolves to {count} rows"),
+        });
+    }
+    connection.query_row(sql, [id], mapper).map_err(Into::into)
+}
+
+#[cfg(all(feature = "write", feature = "raster"))]
+fn quote_raster_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
+#[cfg(all(feature = "write", feature = "raster"))]
+fn enforce_raster_clone_limit(value: u64, limit: u64, resource: &'static str) -> Result<()> {
+    if value > limit {
+        Err(Error::LimitExceeded {
+            resource,
+            value,
+            limit,
+        })
+    } else {
+        Ok(())
     }
 }
 
@@ -1232,6 +2458,152 @@ mod tests {
         Database::from_connection(connection).unwrap()
     }
 
+    #[cfg(all(feature = "write", feature = "raster"))]
+    fn raster_clone_database() -> Connection {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE Canvas (
+                    _PW_ID INTEGER PRIMARY KEY,
+                    MainId INTEGER,
+                    CanvasRootFolder INTEGER
+                 );
+                 INSERT INTO Canvas VALUES (1, 1, 2);
+                 CREATE TABLE Layer (
+                    _PW_ID INTEGER PRIMARY KEY,
+                    MainId INTEGER,
+                    CanvasId INTEGER,
+                    LayerName TEXT,
+                    LayerType INTEGER,
+                    LayerFolder INTEGER,
+                    LayerSelect INTEGER,
+                    LayerNextIndex INTEGER,
+                    LayerFirstChildIndex INTEGER,
+                    LayerUuid TEXT,
+                    LayerRenderMipmap INTEGER,
+                    LayerLayerMaskMipmap INTEGER,
+                    LayerRenderThumbnail INTEGER,
+                    LayerLayerMaskThumbnail INTEGER,
+                    OpaqueColumn BLOB
+                 );
+                 INSERT INTO Layer VALUES (
+                    1, 2, 1, 'root', 256, 1, 0, 0, 3,
+                    '00aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa',
+                    0, 0, 0, 0, X'01'
+                 );
+                 INSERT INTO Layer VALUES (
+                    2, 3, 1, 'template', 1, 0, 1, 0, 0,
+                    '11bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbb',
+                    3, 0, 3, 0, X'CAFE'
+                 );
+                 CREATE TABLE Mipmap (
+                    _PW_ID INTEGER PRIMARY KEY,
+                    MainId INTEGER,
+                    CanvasId INTEGER,
+                    LayerId INTEGER,
+                    MipmapCount INTEGER,
+                    BaseMipmapInfo INTEGER,
+                    OpaqueColumn TEXT
+                 );
+                 INSERT INTO Mipmap VALUES (1, 3, 1, 3, 2, 5, 'mipmap');
+                 CREATE TABLE MipmapInfo (
+                    _PW_ID INTEGER PRIMARY KEY,
+                    MainId INTEGER,
+                    CanvasId INTEGER,
+                    LayerId INTEGER,
+                    ThisScale REAL,
+                    Offscreen INTEGER,
+                    NextIndex INTEGER,
+                    OpaqueColumn TEXT
+                 );
+                 INSERT INTO MipmapInfo VALUES (1, 5, 1, 3, 100.0, 7, 6, 'base');
+                 INSERT INTO MipmapInfo VALUES (2, 6, 1, 3, 50.0, 9, 0, 'derived');
+                 CREATE TABLE Offscreen (
+                    _PW_ID INTEGER PRIMARY KEY,
+                    MainId INTEGER,
+                    CanvasId INTEGER,
+                    LayerId INTEGER,
+                    Attribute BLOB,
+                    BlockData BLOB,
+                    OpaqueColumn INTEGER
+                 );
+                 CREATE TABLE LayerThumbnail (
+                    _PW_ID INTEGER PRIMARY KEY,
+                    MainId INTEGER,
+                    CanvasId INTEGER,
+                    LayerId INTEGER,
+                    ThumbnailOffscreen INTEGER,
+                    OpaqueColumn TEXT
+                 );
+                 INSERT INTO LayerThumbnail VALUES (1, 3, 1, 3, 8, 'thumbnail');
+                 CREATE TABLE ExternalChunk (
+                    _PW_ID INTEGER PRIMARY KEY,
+                    ExternalID BLOB,
+                    Offset INTEGER
+                 );
+                 CREATE TABLE ElemScheme (
+                    _PW_ID INTEGER PRIMARY KEY,
+                    TableName TEXT,
+                    MaxIndex INTEGER
+                 );
+                 INSERT INTO ElemScheme VALUES (1, 'Layer', 3);
+                 INSERT INTO ElemScheme VALUES (2, 'Mipmap', 3);
+                 INSERT INTO ElemScheme VALUES (3, 'MipmapInfo', 6);
+                 INSERT INTO ElemScheme VALUES (4, 'Offscreen', 9);
+                 INSERT INTO ElemScheme VALUES (5, 'LayerThumbnail', 3);",
+            )
+            .unwrap();
+        let attribute = attributes();
+        for (pw_id, main_id, identifier, opaque) in [
+            (
+                1_i64,
+                7_i64,
+                b"extrnlidAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".as_slice(),
+                100_i64,
+            ),
+            (
+                2,
+                9,
+                b"extrnlidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB".as_slice(),
+                50,
+            ),
+            (
+                3,
+                8,
+                b"extrnlidCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC".as_slice(),
+                25,
+            ),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO Offscreen VALUES (?1, ?2, 1, 3, ?3, ?4, ?5)",
+                    params![pw_id, main_id, &attribute, identifier, opaque],
+                )
+                .unwrap();
+        }
+        connection
+    }
+
+    #[cfg(all(feature = "write", feature = "raster"))]
+    fn raster_clone_insertion<'a>(
+        connection: &Connection,
+        template: &'a RasterLayerTemplate,
+    ) -> RasterLayerCloneInsertion<'a> {
+        RasterLayerCloneInsertion::prepare(
+            connection,
+            template,
+            "new raster",
+            attributes(),
+            vec![
+                b"extrnlid11111111111111111111111111111111".to_vec(),
+                b"extrnlid22222222222222222222222222222222".to_vec(),
+                b"extrnlid33333333333333333333333333333333".to_vec(),
+            ],
+            Limits::default(),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn parses_complete_attributes() {
         let attributes = OffscreenAttributes::parse(&attributes()).unwrap();
@@ -1355,6 +2727,245 @@ mod tests {
             ),
             Err(Error::InvalidWrite { .. })
         ));
+    }
+
+    #[cfg(all(feature = "write", feature = "raster"))]
+    #[test]
+    fn enforces_the_layer_limit_before_cloning_raster_rows() {
+        let connection = raster_clone_database();
+        assert!(matches!(
+            RasterLayerTemplate::read(&connection, 3, 2, Limits::default().with_max_layers(2),),
+            Err(Error::LimitExceeded {
+                resource: "layers after raster clone",
+                value: 3,
+                limit: 2,
+            })
+        ));
+    }
+
+    #[cfg(all(feature = "write", feature = "raster"))]
+    #[test]
+    fn enforces_the_new_raster_layer_depth_at_the_parent_boundary() {
+        let connection = raster_clone_database();
+        connection
+            .execute_batch(
+                "UPDATE Layer SET LayerNextIndex = 4 WHERE MainId = 3;
+                 INSERT INTO Layer VALUES (
+                    3, 4, 1, 'destination', 256, 1, 0, 0, 0,
+                    '22cccccccc-cccc-4ccc-8ccc-cccccccccc',
+                    0, 0, 0, 0, X'02'
+                 );
+                 UPDATE ElemScheme SET MaxIndex = 4 WHERE TableName = 'Layer';",
+            )
+            .unwrap();
+
+        assert!(
+            RasterLayerTemplate::read(
+                &connection,
+                3,
+                4,
+                Limits::default().with_max_layer_tree_depth(2),
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            RasterLayerTemplate::read(
+                &connection,
+                3,
+                4,
+                Limits::default().with_max_layer_tree_depth(1),
+            ),
+            Err(Error::LimitExceeded {
+                resource: "new raster layer tree depth",
+                value: 2,
+                limit: 1,
+            })
+        ));
+    }
+
+    #[cfg(all(feature = "write", feature = "raster"))]
+    #[test]
+    fn clones_raster_rows_preserves_unknown_columns_and_invalidates_caches() {
+        let mut connection = raster_clone_database();
+        let template = RasterLayerTemplate::read(&connection, 3, 2, Limits::default()).unwrap();
+        let insertion = raster_clone_insertion(&connection, &template);
+        let layer_id = insert_raster_layer_clone(&mut connection, insertion).unwrap();
+        assert_eq!(layer_id, 4);
+        let layer: (i64, i64, i64, String, Vec<u8>) = connection
+            .query_row(
+                "SELECT LayerNextIndex, LayerRenderMipmap, LayerRenderThumbnail, \
+                 LayerUuid, OpaqueColumn FROM Layer WHERE MainId = 4",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!((layer.0, layer.1, layer.2), (3, 4, 4));
+        assert_eq!(layer.3.len(), 36);
+        assert_eq!(layer.4, [0xCA, 0xFE]);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT LayerFirstChildIndex FROM Layer WHERE MainId = 2",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            4
+        );
+        let offscreens = connection
+            .prepare(
+                "SELECT MainId, BlockData, OpaqueColumn FROM Offscreen \
+                 WHERE LayerId = 4 ORDER BY MainId",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            offscreens,
+            vec![
+                (
+                    10,
+                    b"extrnlid11111111111111111111111111111111".to_vec(),
+                    100,
+                ),
+                (11, b"extrnlid22222222222222222222222222222222".to_vec(), 50,),
+                (12, b"extrnlid33333333333333333333333333333333".to_vec(), 25,),
+            ]
+        );
+        let maxima = connection
+            .prepare(
+                "SELECT TableName, MaxIndex FROM ElemScheme \
+                 WHERE TableName IN ('Layer','Mipmap','MipmapInfo','Offscreen','LayerThumbnail') \
+                 ORDER BY TableName",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            maxima,
+            vec![
+                ("Layer".to_owned(), 4),
+                ("LayerThumbnail".to_owned(), 4),
+                ("Mipmap".to_owned(), 4),
+                ("MipmapInfo".to_owned(), 8),
+                ("Offscreen".to_owned(), 12),
+            ]
+        );
+    }
+
+    #[cfg(all(feature = "write", feature = "raster"))]
+    #[test]
+    fn preserves_text_storage_for_cloned_raster_external_identifiers() {
+        let mut connection = raster_clone_database();
+        connection
+            .execute(
+                "UPDATE Offscreen SET BlockData = CAST(BlockData AS TEXT)",
+                [],
+            )
+            .unwrap();
+        let template = RasterLayerTemplate::read(&connection, 3, 2, Limits::default()).unwrap();
+        let insertion = raster_clone_insertion(&connection, &template);
+        insert_raster_layer_clone(&mut connection, insertion).unwrap();
+
+        let rows = connection
+            .prepare(
+                "SELECT typeof(BlockData), BlockData FROM Offscreen \
+                 WHERE LayerId = 4 ORDER BY MainId",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "text".to_owned(),
+                    "extrnlid11111111111111111111111111111111".to_owned(),
+                ),
+                (
+                    "text".to_owned(),
+                    "extrnlid22222222222222222222222222222222".to_owned(),
+                ),
+                (
+                    "text".to_owned(),
+                    "extrnlid33333333333333333333333333333333".to_owned(),
+                ),
+            ]
+        );
+    }
+
+    #[cfg(all(feature = "write", feature = "raster"))]
+    #[test]
+    fn rolls_back_every_raster_clone_row_when_a_late_insert_fails() {
+        let mut connection = raster_clone_database();
+        let template = RasterLayerTemplate::read(&connection, 3, 2, Limits::default()).unwrap();
+        let insertion = raster_clone_insertion(&connection, &template);
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_second_cloned_offscreen \
+                 BEFORE INSERT ON Offscreen WHEN NEW.MainId = 11 \
+                 BEGIN SELECT RAISE(ABORT, 'test rollback'); END;",
+            )
+            .unwrap();
+        assert!(insert_raster_layer_clone(&mut connection, insertion).is_err());
+        for (table, count) in [
+            ("Layer", 2),
+            ("Mipmap", 1),
+            ("MipmapInfo", 2),
+            ("Offscreen", 3),
+            ("LayerThumbnail", 1),
+        ] {
+            let actual: i64 = connection
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(actual, count, "{table}");
+        }
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT LayerFirstChildIndex FROM Layer WHERE MainId = 2",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT MaxIndex FROM ElemScheme WHERE TableName = 'Layer'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            3
+        );
     }
 
     #[test]
