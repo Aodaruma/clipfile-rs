@@ -1306,9 +1306,8 @@ fn animation_track_sources(
             layer_uuid: uuid.map(normalize_uuid).transpose()?,
         });
     }
-    if database.schema().has_column("Track", "TrackNextIndex")
-        && let Some(first_track_id) = timeline.first_track_id
-    {
+    let has_track_chain = database.schema().has_column("Track", "TrackNextIndex");
+    if let Some(first_track_id) = timeline.first_track_id.filter(|_| has_track_chain) {
         validate_track_chain(&sources, first_track_id)?;
     }
     Ok(sources)

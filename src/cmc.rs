@@ -231,8 +231,8 @@ impl CmcFile {
                 ("FirstChildIndex", node.first_child_id),
                 ("SelectedIndex", node.selected_id),
             ] {
-                if let Some(reference) = reference
-                    && !nodes_by_id.contains_key(&reference)
+                if let Some(reference) =
+                    reference.filter(|reference| !nodes_by_id.contains_key(reference))
                 {
                     return Err(cmc_error(format!(
                         "CanvasNode {} {name} references missing node {reference}",
@@ -257,8 +257,9 @@ impl CmcFile {
                         parent.id
                     )));
                 }
-                if let Some(previous) = parents.insert(child_id, parent.id)
-                    && previous != parent.id
+                if let Some(previous) = parents
+                    .insert(child_id, parent.id)
+                    .filter(|previous| *previous != parent.id)
                 {
                     return Err(cmc_error(format!(
                         "CanvasNode {child_id} has parents {previous} and {}",
