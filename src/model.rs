@@ -251,18 +251,117 @@ impl LayerKind {
 }
 
 /// Raw, forward-compatible `LayerComposite` value.
+///
+/// Constants cover every composition value currently verified in the local
+/// corpus. Unknown future values remain constructible with [`Self::from_raw`]
+/// and are preserved by [`Self::raw`].
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct BlendMode(i64);
 
 impl BlendMode {
     /// Normal composition.
     pub const NORMAL: Self = Self(0);
+    /// Darken composition.
+    pub const DARKEN: Self = Self(1);
     /// Multiply composition.
     pub const MULTIPLY: Self = Self(2);
+    /// Color-burn composition.
+    pub const COLOR_BURN: Self = Self(3);
+    /// Linear-burn composition.
+    pub const LINEAR_BURN: Self = Self(4);
+    /// Subtract composition.
+    pub const SUBTRACT: Self = Self(5);
+    /// Darker-color composition.
+    pub const DARKER_COLOR: Self = Self(6);
+    /// Lighten composition.
+    pub const LIGHTEN: Self = Self(7);
     /// Screen composition.
     pub const SCREEN: Self = Self(8);
+    /// Color-dodge composition.
+    pub const COLOR_DODGE: Self = Self(9);
+    /// Glow-dodge composition.
+    pub const GLOW_DODGE: Self = Self(10);
+    /// Add composition.
+    pub const ADD: Self = Self(11);
+    /// Add-glow composition.
+    pub const ADD_GLOW: Self = Self(12);
+    /// Lighter-color composition.
+    pub const LIGHTER_COLOR: Self = Self(13);
     /// Overlay composition.
     pub const OVERLAY: Self = Self(14);
+    /// Soft-light composition.
+    pub const SOFT_LIGHT: Self = Self(15);
+    /// Hard-light composition.
+    pub const HARD_LIGHT: Self = Self(16);
+    /// Vivid-light composition.
+    pub const VIVID_LIGHT: Self = Self(17);
+    /// Linear-light composition.
+    pub const LINEAR_LIGHT: Self = Self(18);
+    /// Pin-light composition.
+    pub const PIN_LIGHT: Self = Self(19);
+    /// Hard-mix composition.
+    pub const HARD_MIX: Self = Self(20);
+    /// Difference composition.
+    pub const DIFFERENCE: Self = Self(21);
+    /// Exclusion composition.
+    pub const EXCLUSION: Self = Self(22);
+    /// Hue composition.
+    pub const HUE: Self = Self(23);
+    /// Saturation composition.
+    pub const SATURATION: Self = Self(24);
+    /// Color composition.
+    pub const COLOR: Self = Self(25);
+    /// Brightness composition.
+    pub const BRIGHTNESS: Self = Self(26);
+    /// Pass-through composition used by layer folders.
+    pub const PASS_THROUGH: Self = Self(30);
+    /// Divide composition.
+    pub const DIVIDE: Self = Self(36);
+
+    /// Creates a blend mode without discarding an unknown future raw value.
+    #[must_use]
+    pub const fn from_raw(raw: i64) -> Self {
+        Self(raw)
+    }
+
+    /// Stable English name for a verified value.
+    ///
+    /// Unknown future values return `None`; use [`Self::raw`] to inspect them.
+    #[must_use]
+    pub const fn known_name(self) -> Option<&'static str> {
+        match self.0 {
+            0 => Some("normal"),
+            1 => Some("darken"),
+            2 => Some("multiply"),
+            3 => Some("color burn"),
+            4 => Some("linear burn"),
+            5 => Some("subtract"),
+            6 => Some("darker color"),
+            7 => Some("lighten"),
+            8 => Some("screen"),
+            9 => Some("color dodge"),
+            10 => Some("glow dodge"),
+            11 => Some("add"),
+            12 => Some("add glow"),
+            13 => Some("lighter color"),
+            14 => Some("overlay"),
+            15 => Some("soft light"),
+            16 => Some("hard light"),
+            17 => Some("vivid light"),
+            18 => Some("linear light"),
+            19 => Some("pin light"),
+            20 => Some("hard mix"),
+            21 => Some("difference"),
+            22 => Some("exclusion"),
+            23 => Some("hue"),
+            24 => Some("saturation"),
+            25 => Some("color"),
+            26 => Some("brightness"),
+            30 => Some("pass through"),
+            36 => Some("divide"),
+            _ => None,
+        }
+    }
 
     /// Original SQLite value.
     #[must_use]
@@ -887,6 +986,51 @@ mod tests {
         let paint = document.layer(2).unwrap();
         assert_eq!(paint.blend_mode(), BlendMode::MULTIPLY);
         assert_eq!(paint.opacity_fraction(), 0.5);
+    }
+
+    #[test]
+    fn recognizes_all_observed_blend_modes_and_preserves_unknown_values() {
+        let observed = [
+            (BlendMode::NORMAL, 0, "normal"),
+            (BlendMode::DARKEN, 1, "darken"),
+            (BlendMode::MULTIPLY, 2, "multiply"),
+            (BlendMode::COLOR_BURN, 3, "color burn"),
+            (BlendMode::LINEAR_BURN, 4, "linear burn"),
+            (BlendMode::SUBTRACT, 5, "subtract"),
+            (BlendMode::DARKER_COLOR, 6, "darker color"),
+            (BlendMode::LIGHTEN, 7, "lighten"),
+            (BlendMode::SCREEN, 8, "screen"),
+            (BlendMode::COLOR_DODGE, 9, "color dodge"),
+            (BlendMode::GLOW_DODGE, 10, "glow dodge"),
+            (BlendMode::ADD, 11, "add"),
+            (BlendMode::ADD_GLOW, 12, "add glow"),
+            (BlendMode::LIGHTER_COLOR, 13, "lighter color"),
+            (BlendMode::OVERLAY, 14, "overlay"),
+            (BlendMode::SOFT_LIGHT, 15, "soft light"),
+            (BlendMode::HARD_LIGHT, 16, "hard light"),
+            (BlendMode::VIVID_LIGHT, 17, "vivid light"),
+            (BlendMode::LINEAR_LIGHT, 18, "linear light"),
+            (BlendMode::PIN_LIGHT, 19, "pin light"),
+            (BlendMode::HARD_MIX, 20, "hard mix"),
+            (BlendMode::DIFFERENCE, 21, "difference"),
+            (BlendMode::EXCLUSION, 22, "exclusion"),
+            (BlendMode::HUE, 23, "hue"),
+            (BlendMode::SATURATION, 24, "saturation"),
+            (BlendMode::COLOR, 25, "color"),
+            (BlendMode::BRIGHTNESS, 26, "brightness"),
+            (BlendMode::PASS_THROUGH, 30, "pass through"),
+            (BlendMode::DIVIDE, 36, "divide"),
+        ];
+
+        for (mode, raw, name) in observed {
+            assert_eq!(mode.raw(), raw);
+            assert_eq!(BlendMode::from_raw(raw), mode);
+            assert_eq!(mode.known_name(), Some(name));
+        }
+
+        let future = BlendMode::from_raw(1_000);
+        assert_eq!(future.raw(), 1_000);
+        assert_eq!(future.known_name(), None);
     }
 
     #[test]
