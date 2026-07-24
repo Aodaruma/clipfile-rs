@@ -214,13 +214,19 @@ BINC文字列表を用いて `FCurve` を列挙すると、`Frame` / `Value` に
 
 inline `TrackValueMap` は全291行で境界まで一致した。先頭はbig-endianの固定長8とentry数で、各entryは自身を含むbig-endian record長、UTF-16BEのparameter名と文字列値、type判別値、payloadを持つ。type 0は8-byte IEEE 754倍精度、type 2は4-byte整数だった。`2000` の191行には各1件の `ImageCelName` があり、整数値は対応FCurveの値と191/191で一致した。`4000` の4行は `PlayTime`、`4001` の4行は各 `PlayTime` / `AudioPlayer` / `AudioVolume` を持つ。公開APIは確認済み型を型付きで返し、未知typeのpayloadも保持する。
 
-`TrackActionMixer2` は全行に外部IDがあり、cel・play-time・audio行では `0110binc` の型schemaと値領域が分離している。値recordは先頭fieldの `Int32[]` / `Name` / `End` metadata headerでschema側の見かけ上の `FCurve` と区別できる。後続fieldも3語headerの先頭は `Int32[]` だが、残り2語は数値・文字列・byte配列で異なる。その後はfield名・配列型・要素数・payload・2個の0終端が続く。
+`TrackActionMixer2` は全行に外部IDがあり、cel・play-time・audio行では `0110binc` の型schemaと値領域が分離している。値recordは先頭fieldの3語metadata headerでschema側の見かけ上の `FCurve` と区別できる。先頭語は `Int32[]`、残り2語は有効な文字列IDで、`Name` / `End` など複数の組み合わせがある。その後はfield名・配列型・要素数・payload・2個の0終端が続く。
 
-Rust APIで5件を再読込すると、secondaryの値recordは37曲線・37キーあり、内訳は `ImageCelName` 32曲線と `AudioPlayer` 5曲線だった。primary 270曲線の完全な複製ではなく、`PlayTime` などには対応するsecondary値recordがない。この37件は対応するprimary曲線と時刻・値・補間・傾き・タグ・revision flagがすべて完全一致した。数値配列はprimaryの `Single[]` に対してsecondaryでは `Double[]` であり、公開APIは `SecondaryAnimationCurve` / `SecondaryAnimationCurveKeyframe` から `f64` のまま返す。
+Rust APIで5件を再読込すると、secondaryの値recordは46曲線・55キーあり、内訳は `ImageCelName` 32曲線・32キー、`AudioPlayer` 5曲線・5キー、`PlayTime` 9曲線・18キーだった。前2種の37曲線は対応primaryと時刻・値・補間・傾き・タグ・revision flagが完全一致した。`PlayTime` 9曲線も対応primaryと許容差0.001以内で一致し、secondary側の小数精度が高いためbit単位では一致しなかった。数値配列はprimaryの `Single[]` に対してsecondaryでは `Double[]` であり、公開APIは `SecondaryAnimationCurve` / `SecondaryAnimationCurveKeyframe` から `f64` のまま返す。
+
+追加の2Dカメラ差分ではsecondary値record先頭のmetadata headerが `Int32[]` / `ShiftBlend` / `AnimInfo` となる例もあった。3語のうち先頭が `Int32[]` で残りが有効な文字列IDであることを検証すれば、scale・rotation・opacityの全曲線をprimaryと同じキーとして復号できた。このため値record判定は特定の残り2語へ固定しない。
 
 匿名の2Dカメラ最小差分3件では、カメラフォルダー追加時に `LayerType=512`、folder flag、timeline keyframe flag、184-byteの `Camera2DResizableImageInfo` と `TrackKind=2005` が1件追加された。trackのvalue mapは `ImageCenter`、`ImagePosition`、`ImageRotation`、`ImageScale`、`Opacity` の5件で、type 3はbig-endianの有限なdouble 2要素だった。移動後は位置が `(432, 324)` から `(447, 327)` へ変わり、primary/secondaryの双方にcenter X/Y、position X/Y、rotation、scaleの6曲線・各1キーが現れた。axis付き曲線は `FCurve` headerのproperty数が2となり、`Type` に加えて `Axis=X/Y` を持つ。
 
 184-byte snapshotはbig-endianで、120-byte header、16-byte point record、4点、720×540の寸法、2軸scale、rotation、position、image center、4隅のdouble XYとして末尾まで一致した。移動差分ではpositionと4隅が同じ `(15, 3)` だけ変化した。公開APIは件数・byte数・寸法、有限値、宣言長を検証し、未命名のheader 11語と完全なraw payloadを保持する。検証データの実体保存先、UUID、ユーザーパス、個人・作品情報は本文に記録しない。
+
+さらにscale・rotation・opacityを1項目ずつ変えた匿名差分3件を比較した。primary/secondary双方でscaleは100から120、rotationは0から15、opacityは100から80とUI入力値をそのまま保持したため、rotationは度、scaleとopacityは百分率と確認できた。`TrackValueMap` は保存時のタイムライン位置で評価された値であり、scaleのキーより前で保存した差分では100のまま、snapshotのscaleも `(1, 1)` のままだった。rotationを15度にした差分ではsnapshotのrotationも15となり4隅が回転した一方、opacity差分ではtransform snapshotは変化しなかった。
+
+rotation差分ではsnapshotの未命名prefix先頭wordだけが0から1へ変化した。ただし非ゼロ回転との相関を1差分で確認した段階なので、意味を命名せずraw値として保持する。
 
 ## タイムラプス
 

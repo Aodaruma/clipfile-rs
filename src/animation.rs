@@ -404,7 +404,8 @@ impl Camera2DPoint {
     }
 }
 
-/// Current/default values stored in a 2D-camera track's `TrackValueMap`.
+/// Values evaluated at the saved timeline position in a 2D-camera track's
+/// `TrackValueMap`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera2DTrackValues {
     image_center: Camera2DPoint,
@@ -427,19 +428,19 @@ impl Camera2DTrackValues {
         self.image_position
     }
 
-    /// Rotation in the value stored by CLIP STUDIO PAINT.
+    /// Rotation in degrees.
     #[must_use]
     pub const fn rotation(self) -> f64 {
         self.rotation
     }
 
-    /// Scale value stored by CLIP STUDIO PAINT.
+    /// Scale as a percentage, where `100.0` is the original size.
     #[must_use]
     pub const fn scale(self) -> f64 {
         self.scale
     }
 
-    /// Opacity value stored by CLIP STUDIO PAINT.
+    /// Opacity as a percentage, where `100.0` is fully opaque.
     #[must_use]
     pub const fn opacity(self) -> f64 {
         self.opacity
@@ -488,13 +489,13 @@ impl Camera2DTransform {
         self.height
     }
 
-    /// Horizontal and vertical scale factors.
+    /// Horizontal and vertical scale factors, where `1.0` is the original size.
     #[must_use]
     pub const fn scale(&self) -> Camera2DPoint {
         self.scale
     }
 
-    /// Rotation stored in the snapshot.
+    /// Rotation in degrees.
     #[must_use]
     pub const fn rotation(&self) -> f64 {
         self.rotation
@@ -680,7 +681,8 @@ impl AnimationTrack {
         &self.secondary_curves
     }
 
-    /// Typed current/default values for a verified 2D-camera track.
+    /// Values evaluated at the saved timeline position for a verified
+    /// 2D-camera track.
     #[must_use]
     pub const fn camera_2d_values(&self) -> Option<Camera2DTrackValues> {
         self.camera_2d_values
@@ -1821,14 +1823,9 @@ fn parse_secondary_animation_curves(
     let Some(fcurve) = string_id_optional(&strings, "FCurve") else {
         return Ok(Vec::new());
     };
-    let (Some(int32_array), Some(name), Some(end)) = (
-        string_id_optional(&strings, "Int32[]"),
-        string_id_optional(&strings, "Name"),
-        string_id_optional(&strings, "End"),
-    ) else {
+    let Some(int32_array) = string_id_optional(&strings, "Int32[]") else {
         return Ok(Vec::new());
     };
-    let field_prefix = [int32_array, name, end];
     let minimum_size = 12;
     let mut curves = Vec::new();
     for start in data_start..=bytes.len().saturating_sub(minimum_size) {
@@ -1837,7 +1834,7 @@ fn parse_secondary_animation_curves(
         };
         let mut cursor = header.cursor;
         let field_count = read_u32(bytes, &mut cursor)?;
-        if !u32_pattern_matches(bytes, cursor, &field_prefix) {
+        if !secondary_field_header_matches(bytes, cursor, strings.len(), int32_array) {
             continue;
         }
         enforce_item_limit(
@@ -2287,17 +2284,6 @@ fn parse_string_table_with_data_start(
     Ok((strings, cursor))
 }
 
-fn u32_pattern_matches(bytes: &[u8], start: usize, pattern: &[u32]) -> bool {
-    pattern.iter().enumerate().all(|(index, expected)| {
-        let offset = start + index * 4;
-        bytes
-            .get(offset..offset + 4)
-            .and_then(|value| <[u8; 4]>::try_from(value).ok())
-            .map(u32::from_le_bytes)
-            == Some(*expected)
-    })
-}
-
 fn string_id_optional(strings: &[String], wanted: &str) -> Option<u32> {
     strings
         .iter()
@@ -2537,7 +2523,7 @@ mod tests {
             push_u32(&mut bytes, value);
         }
         for (field, value) in [(8, 94.0_f64), (10, 447.0)] {
-            for prefix in [5, 6, 7] {
+            for prefix in [5, 1, 2] {
                 push_u32(&mut bytes, prefix);
             }
             push_u32(&mut bytes, field);
@@ -2547,7 +2533,7 @@ mod tests {
             push_u32(&mut bytes, 0);
             push_u32(&mut bytes, 0);
         }
-        for prefix in [5, 6, 7] {
+        for prefix in [5, 1, 2] {
             push_u32(&mut bytes, prefix);
         }
         push_u32(&mut bytes, 11);
@@ -3057,7 +3043,9 @@ mod tests {
             camera.image_position(),
             Camera2DPoint { x: 447.0, y: 327.0 }
         );
+        assert_eq!(camera.rotation(), 0.0);
         assert_eq!(camera.scale(), 100.0);
+        assert_eq!(camera.opacity(), 100.0);
     }
 
     #[test]

@@ -12,7 +12,7 @@
 - `TextLayerData` / `TextObjectData`: UTF-8本文、所有レイヤー、形式値、オブジェクト別の不透明な属性
 - `CorrectionLayerData` / `Correction`: 補正レイヤーの形式値、9種の型付きparameter、元の属性payload
 - `Animation` / `Timeline` / `AnimationTrack` / `AnimationCurve` / `AnimationTrackValueEntry` / `CelTrack`: 再生範囲、fps、raw track kind、レイヤー対応、汎用FCurve、現在値、セル選択キー
-- `Camera2DLayerData` / `Camera2DTransform` / `Camera2DTrackValues`: 2Dカメラfolder、現在transform snapshot、軸付きcurveとtrack既定値
+- `Camera2DLayerData` / `Camera2DTransform` / `Camera2DTrackValues`: 2Dカメラfolder、現在transform snapshot、軸付きcurveと保存位置のtrack値
 - `TimeLapse` / `TimeLapseManager` / `TimeLapseRecord` / `TimeLapseBlob` / `TimeLapseFrame`: canvasごとの記録、連続BLOB、内部WebP frame索引
 - `CmcFile` / `CmcNode`: standalone `.cmc` のProject metadata、検証済みページtree、raw・安全解決済みページ参照
 - `Layer`: 名前、種類、合成、可視性、不透明度、ロック、クリッピング、マスク、兄弟・子・Mipmap参照
@@ -47,9 +47,9 @@
 
 `animation` featureの `Database::timelines(limits)` は、fpsと再生範囲を検証して全タイムラインを返す。`ClipFile::read_animation(database, limits)` は有効な `AnimationCutBank.FirstTimeLine` を優先し、同じbankの全トラックを読む。`FirstTrack` から `TrackNextIndex` をたどり、循環・欠落・到達不能・重複IDがないことも検証する。primary `TrackActionMixer` はSQLiteの外部ID索引から直接解決し、little-endian長付きzlibを上限付きで展開する。BINC文字列表から全 `FCurve` を列挙し、配列境界、有限・昇順の60 Hzキー時刻、`Frame` / `Value` と任意の `Tag` / `Interp` / slope / `ReviseConstant` の同数性を検証する。vector parameterの `Axis=X/Y` は `AnimationCurve::axis` で保持する。`AnimationTrackKind` はraw値を保持し、確認済みの `1000`（non-cel folder）、`2000`（image cel）、`2001`（static image）、`2003`（paper）、`2005`（2D camera）、`4000`（play time）、`4001`（audio）に判定ヘルパーを持つ。トラックとレイヤーは16-byte UUIDで照合する。
 
-既存互換の `CelTrack` は `TrackKind=2000` の先頭 `ImageCelName` 曲線を使う。複数曲線、`PlayTime`、`AudioPlayer` を含むprimary mixerの全曲線は `Animation::animation_tracks()` から取得する。各 `AnimationTrack` はinline `TrackValueMap` の有無と全entryも返す。mapはbig-endianのヘッダ・record長とUTF-16BE文字列の境界を検証し、確認済みのtype 0を `Float(f64)`、type 2を `IndexedText`、type 3を `Vector2` として返す。将来typeは判別値・文字列・payloadを `Unknown` に損失なく保持する。secondary `0110binc` はschema側の見かけ上の `FCurve` と、先頭fieldに `Int32[]` / `Name` / `End` metadata headerを持つ値recordを区別する。後者の `Double[]` 時刻・値・傾きは `SecondaryAnimationCurve` から `f64` のまま取得できる。secondary値recordは疎であるため、secondary mixer外部IDが存在しても曲線配列は空になり得る。
+既存互換の `CelTrack` は `TrackKind=2000` の先頭 `ImageCelName` 曲線を使う。複数曲線、`PlayTime`、`AudioPlayer` を含むprimary mixerの全曲線は `Animation::animation_tracks()` から取得する。各 `AnimationTrack` はinline `TrackValueMap` の有無と全entryも返す。mapはbig-endianのヘッダ・record長とUTF-16BE文字列の境界を検証し、確認済みのtype 0を `Float(f64)`、type 2を `IndexedText`、type 3を `Vector2` として返す。将来typeは判別値・文字列・payloadを `Unknown` に損失なく保持する。secondary `0110binc` はschema側の見かけ上の `FCurve` と値recordを区別し、値record先頭fieldの3語headerは先頭が `Int32[]`、残りが有効な文字列IDであることを検証する。観測例には `Name` / `End` と `ShiftBlend` / `AnimInfo` があり、特定の組み合わせへ固定しない。後者の `Double[]` 時刻・値・傾きは `SecondaryAnimationCurve` から `f64` のまま取得できる。secondary値recordは疎であるため、secondary mixer外部IDが存在しても曲線配列は空になり得る。
 
-`Database::camera_2d_layer(layer_id, limits)` は `LayerType` のcamera bit、folder flag、元frame center、`Camera2DResizableImageInfo` のheader・point record宣言を検証する。`Camera2DTransform` は寸法、scale、rotation、position、image center、4隅を型付きで返し、未命名wordとraw payloadも保持する。`ClipFile::read_animation` はkind `2005` と対象camera layerをUUIDで照合し、5個の必須current/default valueを `Camera2DTrackValues` へまとめる。`Animation::camera_track_for_layer` からlayer単位で取得できる。
+`Database::camera_2d_layer(layer_id, limits)` は `LayerType` のcamera bit、folder flag、元frame center、`Camera2DResizableImageInfo` のheader・point record宣言を検証する。`Camera2DTransform` は寸法、scale factor、度単位のrotation、position、image center、4隅を型付きで返し、未命名wordとraw payloadも保持する。`ClipFile::read_animation` はkind `2005` と対象camera layerをUUIDで照合し、保存時のタイムライン位置で評価された5個の必須値を `Camera2DTrackValues` へまとめる。track側のrotationは度、scale・opacityは百分率である。`Animation::camera_track_for_layer` からlayer単位で取得できる。
 
 `Limits::max_animation_bytes` は圧縮・展開ミキサー、タイムライン名、2Dカメラsnapshot、`Limits::max_animation_items` はタイムライン、トラック、BINC文字列・配列、camera frame cornerの上限に使う。
 

@@ -163,9 +163,11 @@ static-image layers, paper, play-time control, and audio control.
 Verified 2D-camera tracks use raw kind `2005`. `ImageCenter` and
 `ImagePosition` current values are exposed as two-dimensional values, while
 their `Axis=X/Y` primary and secondary curves remain distinct through
-`AnimationCurve::axis`. `Database::camera_2d_layer` validates the camera
-folder bit, bounded transform snapshot, dimensions, finite
-position/scale/rotation values, and transformed frame corners;
+`AnimationCurve::axis`. Rotation is expressed in degrees, scale and opacity
+as percentages, and the current values reflect the saved timeline position.
+`Database::camera_2d_layer` validates the camera folder bit, bounded transform
+snapshot, dimensions, finite position/scale/rotation values, and transformed
+frame corners;
 `ClipFile::read_animation` cross-validates kind-`2005` tracks with those
 layers. Unnamed header words and the complete source payload remain available
 for forward-compatible inspection.
