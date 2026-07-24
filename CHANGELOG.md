@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-24
+
 ### Added
 
 - Typed constants and stable names for all 29 observed layer blend modes,
@@ -24,6 +26,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Conservative animation Track cloning with regenerated row/track/external
   identities, independent primary and secondary mixer bodies, complete
   unknown-column preservation, and validated timeline-chain insertion.
+
+### Fixed
+
+- Preserve the observed SQLite storage class for newly indexed external
+  identifiers so generated files remain readable by CLIP STUDIO PAINT.
+- Keep the Track allocation high-water mark in `ElemScheme` synchronized when
+  cloning animation tracks.
 
 ## [0.4.0] - 2026-07-24
 
@@ -120,7 +129,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Optional offscreen metadata parsing, bounded zlib tile decoding, and raster assembly.
 - Project, canvas, layer, and cycle-checked layer-tree models.
 
-[Unreleased]: https://github.com/Aodaruma/clipfile-rs/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Aodaruma/clipfile-rs/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Aodaruma/clipfile-rs/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Aodaruma/clipfile-rs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Aodaruma/clipfile-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Aodaruma/clipfile-rs/compare/v0.1.0...v0.2.0

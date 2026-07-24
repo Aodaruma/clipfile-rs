@@ -3,7 +3,7 @@
 ## 現在の構成
 
 - crate名: `clipfile`
-- version: `0.4.0`
+- version: `0.5.0`
 - edition: Rust 2024
 - MSRV: Rust 1.85
 - license: MIT

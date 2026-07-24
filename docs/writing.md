@@ -4,7 +4,7 @@
 
 ```toml
 [dependencies]
-clipfile = { version = "0.4", features = ["write"] }
+clipfile = { version = "0.5", features = ["write"] }
 ```
 
 ## 基本API
