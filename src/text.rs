@@ -293,6 +293,27 @@ impl EditableDatabase {
             limits,
         )
     }
+
+    /// Removes one text object while keeping the layer structurally valid.
+    ///
+    /// A text layer must retain at least one object. When the primary object
+    /// (index zero) is removed, the next object is promoted into the primary
+    /// string and attribute columns. The paired additional-attribute record is
+    /// removed in the same update. The removed object is returned.
+    pub fn remove_text_object(
+        &self,
+        layer_id: i64,
+        object_index: usize,
+        limits: Limits,
+    ) -> Result<TextObjectData> {
+        remove_text_object(
+            self.connection(),
+            self.schema(),
+            layer_id,
+            object_index,
+            limits,
+        )
+    }
 }
 
 #[cfg(feature = "write")]
@@ -757,6 +778,219 @@ fn add_text_object_from_template(
     Ok(TextObjectWriteSummary {
         object_index: object_count,
         identifier,
+    })
+}
+
+#[cfg(feature = "write")]
+fn remove_text_object(
+    connection: &rusqlite::Connection,
+    schema: &DatabaseSchema,
+    layer_id: i64,
+    object_index: usize,
+    limits: Limits,
+) -> Result<TextObjectData> {
+    for column in [
+        "MainId",
+        "TextLayerType",
+        "TextLayerString",
+        "TextLayerAttributes",
+        "TextLayerStringArray",
+        "TextLayerAttributesArray",
+        "TextLayerAddAttributesV01",
+    ] {
+        if !schema.has_column("Layer", column) {
+            return Err(Error::InvalidWrite {
+                reason: format!("Layer.{column} is required to remove a text object"),
+            });
+        }
+    }
+    let row_count: i64 = connection.query_row(
+        "SELECT count(*) FROM Layer WHERE MainId = ?1",
+        params![layer_id],
+        |row| row.get(0),
+    )?;
+    if row_count != 1 {
+        return Err(Error::InvalidWrite {
+            reason: format!("expected one text layer with ID {layer_id}, found {row_count}"),
+        });
+    }
+
+    let sql = "SELECT TextLayerType, TextLayerString, TextLayerAttributes, \
+               TextLayerStringArray, TextLayerAttributesArray, TextLayerAddAttributesV01 \
+               FROM Layer WHERE MainId = ?1 LIMIT 1";
+    let (
+        text_layer_type,
+        primary_string,
+        primary_attributes,
+        string_array,
+        attributes_array,
+        additional_attributes,
+    ) = connection.query_row(sql, params![layer_id], |row| {
+        Ok((
+            row.get::<_, Option<i64>>(0)?,
+            optional_bytes(row.get_ref(1)?, 1, "TextLayerString")?.map(<[u8]>::to_vec),
+            optional_bytes(row.get_ref(2)?, 2, "TextLayerAttributes")?.map(<[u8]>::to_vec),
+            optional_bytes(row.get_ref(3)?, 3, "TextLayerStringArray")?.map(<[u8]>::to_vec),
+            optional_bytes(row.get_ref(4)?, 4, "TextLayerAttributesArray")?.map(<[u8]>::to_vec),
+            optional_bytes(row.get_ref(5)?, 5, "TextLayerAddAttributesV01")?.map(<[u8]>::to_vec),
+        ))
+    })?;
+    if text_layer_type.is_none() {
+        return Err(Error::InvalidWrite {
+            reason: format!("layer {layer_id} is not a text layer"),
+        });
+    }
+    let primary_string = primary_string.ok_or_else(|| Error::InvalidWrite {
+        reason: format!("text layer {layer_id} has no primary string"),
+    })?;
+    let primary_attributes = primary_attributes.ok_or_else(|| Error::InvalidWrite {
+        reason: format!("text layer {layer_id} has no primary attribute record"),
+    })?;
+    let additional_attributes = additional_attributes.ok_or_else(|| Error::InvalidWrite {
+        reason: format!("text layer {layer_id} has no TextLayerAddAttributesV01 array"),
+    })?;
+
+    let mut total_bytes = 0_u64;
+    for bytes in [
+        Some(primary_string.as_slice()),
+        Some(primary_attributes.as_slice()),
+        string_array.as_deref(),
+        attributes_array.as_deref(),
+        Some(additional_attributes.as_slice()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        account_bytes(&mut total_bytes, bytes.len(), limits.max_text_bytes())?;
+    }
+
+    let mut strings = vec![primary_string];
+    if let Some(bytes) = string_array.as_deref() {
+        strings.extend(
+            split_array(
+                bytes,
+                "TextLayerStringArray",
+                limits.max_text_objects().saturating_sub(1),
+            )?
+            .into_iter()
+            .map(<[u8]>::to_vec),
+        );
+    }
+    let mut attributes = vec![primary_attributes];
+    if let Some(bytes) = attributes_array.as_deref() {
+        attributes.extend(
+            split_array(
+                bytes,
+                "TextLayerAttributesArray",
+                limits.max_text_objects().saturating_sub(1),
+            )?
+            .into_iter()
+            .map(<[u8]>::to_vec),
+        );
+    }
+    if strings.len() != attributes.len() {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "text layer {layer_id} has {} strings but {} attribute records",
+                strings.len(),
+                attributes.len()
+            ),
+        });
+    }
+    let object_count = strings.len();
+    if object_count as u64 > limits.max_text_objects() {
+        return Err(Error::LimitExceeded {
+            resource: "text objects per layer",
+            value: object_count as u64,
+            limit: limits.max_text_objects(),
+        });
+    }
+    if object_count <= 1 {
+        return Err(Error::InvalidWrite {
+            reason: format!("text layer {layer_id} must retain at least one text object"),
+        });
+    }
+    if object_index >= object_count {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "text layer {layer_id} has {object_count} objects, so object index {object_index} is invalid"
+            ),
+        });
+    }
+
+    let mut additional_items: Vec<Vec<u8>> = split_array(
+        &additional_attributes,
+        "TextLayerAddAttributesV01",
+        limits.max_text_objects(),
+    )?
+    .into_iter()
+    .map(<[u8]>::to_vec)
+    .collect();
+    if additional_items.len() != object_count {
+        return Err(Error::InvalidWrite {
+            reason: format!(
+                "text layer {layer_id} has {object_count} text objects but {} additional attribute records",
+                additional_items.len()
+            ),
+        });
+    }
+    for (index, ((string, attributes), additional)) in strings
+        .iter()
+        .zip(&attributes)
+        .zip(&additional_items)
+        .enumerate()
+    {
+        let _ = decode_text(string)?;
+        let (identifier, _) = text_attribute_identifier(attributes)?;
+        let (additional_identifier, _) = text_attribute_identifier(additional)?;
+        if identifier != additional_identifier {
+            return Err(Error::InvalidWrite {
+                reason: format!(
+                    "text object {index} has identifier {identifier} but its additional attribute record uses {additional_identifier}"
+                ),
+            });
+        }
+    }
+
+    let removed_string = strings.remove(object_index);
+    let removed_attributes = attributes.remove(object_index);
+    additional_items.remove(object_index);
+    let new_primary_string = strings.remove(0);
+    let new_primary_attributes = attributes.remove(0);
+    let new_string_array = if strings.is_empty() {
+        None
+    } else {
+        Some(encode_array(&strings)?)
+    };
+    let new_attributes_array = if attributes.is_empty() {
+        None
+    } else {
+        Some(encode_array(&attributes)?)
+    };
+    let new_additional_attributes = encode_array(&additional_items)?;
+
+    let changed = connection.execute(
+        "UPDATE Layer SET TextLayerString = ?1, TextLayerAttributes = ?2, \
+         TextLayerStringArray = ?3, TextLayerAttributesArray = ?4, \
+         TextLayerAddAttributesV01 = ?5 WHERE MainId = ?6",
+        params![
+            new_primary_string,
+            new_primary_attributes,
+            new_string_array,
+            new_attributes_array,
+            new_additional_attributes,
+            layer_id,
+        ],
+    )?;
+    if changed != 1 {
+        return Err(Error::InvalidWrite {
+            reason: format!("text layer {layer_id} is not unique"),
+        });
+    }
+
+    Ok(TextObjectData {
+        text: decode_text(&removed_string)?.to_owned(),
+        attributes: removed_attributes.into_boxed_slice(),
     })
 }
 
@@ -1359,22 +1593,25 @@ mod tests {
             .unwrap();
         assert_eq!(added.object_index(), 1);
         assert_eq!(added.identifier(), 1001);
+        let removed = writer
+            .database()
+            .remove_text_object(1, 0, Limits::default())
+            .unwrap();
+        assert_eq!(removed.text(), "other");
+        assert_eq!(
+            text_attribute_identifier(removed.attributes()).unwrap().0,
+            1000
+        );
         let mut output = Vec::new();
         writer.write_to(&mut output).unwrap();
 
         let mut rewritten = crate::ClipFile::open(Cursor::new(output)).unwrap();
         let database = rewritten.open_database().unwrap();
         let text = database.text_layer(1, Limits::default()).unwrap().unwrap();
-        assert_eq!(text.objects()[0].text(), "other");
+        assert_eq!(text.objects().len(), 1);
+        assert_eq!(text.objects()[0].text(), "there");
         assert_eq!(
             text_attribute_identifier(text.objects()[0].attributes())
-                .unwrap()
-                .0,
-            1000
-        );
-        assert_eq!(text.objects()[1].text(), "there");
-        assert_eq!(
-            text_attribute_identifier(text.objects()[1].attributes())
                 .unwrap()
                 .0,
             1001
@@ -1385,9 +1622,8 @@ mod tests {
             Limits::default().max_text_objects(),
         )
         .unwrap();
-        assert_eq!(additional.len(), 2);
-        assert_eq!(text_attribute_identifier(additional[0]).unwrap().0, 1000);
-        assert_eq!(text_attribute_identifier(additional[1]).unwrap().0, 1001);
+        assert_eq!(additional.len(), 1);
+        assert_eq!(text_attribute_identifier(additional[0]).unwrap().0, 1001);
     }
 
     #[cfg(feature = "write")]
@@ -1539,6 +1775,176 @@ mod tests {
             Err(Error::InvalidWrite { .. })
         ));
         let after: (Vec<u8>, Vec<u8>, Vec<u8>) = mismatched_database
+            .connection()
+            .query_row(
+                "SELECT TextLayerStringArray, TextLayerAttributesArray, \
+                 TextLayerAddAttributesV01 FROM Layer WHERE MainId = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(after, before);
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn removes_primary_or_array_text_objects_atomically() {
+        fn database_with_three_objects() -> Database {
+            let first_attributes = attributes(10, 1);
+            let second_attributes = attributes(20, 2);
+            let third_attributes = attributes(30, 3);
+            let strings = array(&[b"second", b"third"]);
+            let attribute_array = array(&[&second_attributes, &third_attributes]);
+            let database =
+                text_database_with_first_attributes(&strings, &attribute_array, &first_attributes);
+            let additional = array(&[&first_attributes, &second_attributes, &third_attributes]);
+            database
+                .connection()
+                .execute(
+                    "UPDATE Layer SET TextLayerAddAttributesV01 = ?1 WHERE MainId = 1",
+                    params![additional],
+                )
+                .unwrap();
+            database
+        }
+
+        let database = database_with_three_objects();
+        let removed = remove_text_object(
+            database.connection(),
+            database.schema(),
+            1,
+            1,
+            Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(removed.text(), "second");
+        assert_eq!(
+            text_attribute_identifier(removed.attributes()).unwrap().0,
+            20
+        );
+        let text = database.text_layer(1, Limits::default()).unwrap().unwrap();
+        assert_eq!(
+            text.objects()
+                .iter()
+                .map(TextObjectData::text)
+                .collect::<Vec<_>>(),
+            ["first", "third"]
+        );
+        assert_eq!(
+            text_attribute_identifier(text.objects()[0].attributes())
+                .unwrap()
+                .0,
+            10
+        );
+        assert_eq!(
+            text_attribute_identifier(text.objects()[1].attributes())
+                .unwrap()
+                .0,
+            30
+        );
+
+        let database = database_with_three_objects();
+        let removed = remove_text_object(
+            database.connection(),
+            database.schema(),
+            1,
+            0,
+            Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(removed.text(), "first");
+        assert_eq!(
+            text_attribute_identifier(removed.attributes()).unwrap().0,
+            10
+        );
+        let text = database.text_layer(1, Limits::default()).unwrap().unwrap();
+        assert_eq!(
+            text.objects()
+                .iter()
+                .map(TextObjectData::text)
+                .collect::<Vec<_>>(),
+            ["second", "third"]
+        );
+        assert_eq!(
+            text_attribute_identifier(text.objects()[0].attributes())
+                .unwrap()
+                .0,
+            20
+        );
+        let additional = split_array(
+            text.additional_attributes().unwrap(),
+            "TextLayerAddAttributesV01",
+            Limits::default().max_text_objects(),
+        )
+        .unwrap();
+        assert_eq!(additional.len(), 2);
+        assert_eq!(text_attribute_identifier(additional[0]).unwrap().0, 20);
+        assert_eq!(text_attribute_identifier(additional[1]).unwrap().0, 30);
+
+        let before = database.text_layer(1, Limits::default()).unwrap().unwrap();
+        assert!(matches!(
+            remove_text_object(
+                database.connection(),
+                database.schema(),
+                1,
+                2,
+                Limits::default(),
+            ),
+            Err(Error::InvalidWrite { .. })
+        ));
+        assert_eq!(
+            database.text_layer(1, Limits::default()).unwrap().unwrap(),
+            before
+        );
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn refuses_to_remove_the_only_text_object_or_mismatched_arrays() {
+        let bytes = writable_text_sample();
+        let mut clip = crate::ClipFile::open(Cursor::new(bytes)).unwrap();
+        let writer = clip.writer().unwrap();
+        assert!(matches!(
+            writer
+                .database()
+                .remove_text_object(1, 0, Limits::default()),
+            Err(Error::InvalidWrite { .. })
+        ));
+
+        let first_attributes = attributes(10, 1);
+        let second_attributes = attributes(20, 2);
+        let strings = array(&[b"second"]);
+        let attribute_array = array(&[&second_attributes]);
+        let database =
+            text_database_with_first_attributes(&strings, &attribute_array, &first_attributes);
+        let malformed = array(&[&first_attributes]);
+        database
+            .connection()
+            .execute(
+                "UPDATE Layer SET TextLayerAddAttributesV01 = ?1 WHERE MainId = 1",
+                params![malformed],
+            )
+            .unwrap();
+        let before: (Vec<u8>, Vec<u8>, Vec<u8>) = database
+            .connection()
+            .query_row(
+                "SELECT TextLayerStringArray, TextLayerAttributesArray, \
+                 TextLayerAddAttributesV01 FROM Layer WHERE MainId = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert!(matches!(
+            remove_text_object(
+                database.connection(),
+                database.schema(),
+                1,
+                1,
+                Limits::default(),
+            ),
+            Err(Error::InvalidWrite { .. })
+        ));
+        let after: (Vec<u8>, Vec<u8>, Vec<u8>) = database
             .connection()
             .query_row(
                 "SELECT TextLayerStringArray, TextLayerAttributesArray, \
