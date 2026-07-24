@@ -64,7 +64,7 @@ The container parser has no default dependencies:
 
 ```toml
 [dependencies]
-clipfile = "0.3"
+clipfile = "0.4"
 ```
 
 Enable `sqlite` for document metadata, `raster` for SQLite and raster decoding,
@@ -73,7 +73,7 @@ payload access, or `write` for validated low-level rewriting:
 
 ```toml
 [dependencies]
-clipfile = { version = "0.3", features = ["raster", "animation", "timelapse"] }
+clipfile = { version = "0.4", features = ["raster", "animation", "timelapse"] }
 ```
 
 ## Example
