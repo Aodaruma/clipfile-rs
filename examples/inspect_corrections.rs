@@ -1,12 +1,26 @@
+//! Discovers correction layers and prints their typed, validated parameters.
+
 use std::{env, fs::File, process::ExitCode};
 
-use clipfile::{ClipFile, Limits};
+use clipfile::{ClipFile, Correction, Limits};
 
 fn main() -> ExitCode {
-    let Some(path) = env::args_os().nth(1) else {
-        eprintln!("usage: inspect_corrections <file.clip>");
-        return ExitCode::FAILURE;
+    // Accept one input path and keep CLI failures distinct from parse failures.
+    let mut arguments = env::args_os().skip(1);
+    let Some(path) = arguments.next() else {
+        eprintln!(
+            "usage: cargo run --features sqlite --example inspect_corrections -- <file.clip>"
+        );
+        return ExitCode::from(2);
     };
+    if arguments.next().is_some() {
+        eprintln!(
+            "usage: cargo run --features sqlite --example inspect_corrections -- <file.clip>"
+        );
+        return ExitCode::from(2);
+    }
+
+    // Convert the library Result into a conventional process exit code.
     match inspect(path) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -17,6 +31,7 @@ fn main() -> ExitCode {
 }
 
 fn inspect(path: impl AsRef<std::path::Path>) -> clipfile::Result<()> {
+    // Correction metadata lives in the embedded SQLite database.
     let mut clip = ClipFile::open(File::open(path)?)?;
     let database = clip.open_database()?;
     if !database.schema().has_column("Layer", "FilterLayerInfo") {
@@ -24,6 +39,7 @@ fn inspect(path: impl AsRef<std::path::Path>) -> clipfile::Result<()> {
         return Ok(());
     }
 
+    // The generic Database API can discover candidate layer IDs across schema versions.
     let mut statement = database
         .connection()
         .prepare("SELECT MainId FROM Layer WHERE FilterLayerInfo IS NOT NULL ORDER BY MainId")?;
@@ -32,6 +48,7 @@ fn inspect(path: impl AsRef<std::path::Path>) -> clipfile::Result<()> {
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(statement);
 
+    // correction_layer validates each payload and returns a typed enum.
     println!("correction layers: {}", layer_ids.len());
     for layer_id in layer_ids {
         if let Some(layer) = database.correction_layer(layer_id, Limits::default())? {
@@ -39,10 +56,55 @@ fn inspect(path: impl AsRef<std::path::Path>) -> clipfile::Result<()> {
                 "layer={}\ttype={}\tcorrection={}\tbytes={}",
                 layer.layer_id(),
                 layer.layer_type(),
-                layer.correction().kind(),
+                correction_summary(layer.correction()),
                 layer.raw_attributes().len()
             );
         }
     }
     Ok(())
+}
+
+fn correction_summary(correction: &Correction) -> String {
+    // Keep the output compact while demonstrating all currently typed variants.
+    match correction {
+        Correction::BrightnessContrast {
+            brightness,
+            contrast,
+        } => format!("brightness/contrast: {brightness}/{contrast}"),
+        Correction::Levels { channels } => format!(
+            "levels: {} channels; RGB input {}..{}",
+            channels.len(),
+            channels[0].input_left_8bit(),
+            channels[0].input_right_8bit()
+        ),
+        Correction::ToneCurve { channels } => format!(
+            "tone curve: {} channels, {} RGB points",
+            channels.len(),
+            channels[0].points().len()
+        ),
+        Correction::HueSaturationLuminosity {
+            hue,
+            saturation,
+            luminosity,
+        } => format!("hue/saturation/luminosity: {hue}/{saturation}/{luminosity}"),
+        Correction::ColorBalance {
+            keep_luminosity,
+            shadows,
+            midtones,
+            highlights,
+        } => format!(
+            "color balance: keep={keep_luminosity}, cyan={}/{}/{}",
+            shadows.cyan(),
+            midtones.cyan(),
+            highlights.cyan()
+        ),
+        Correction::ReverseGradient => "reverse gradient".to_owned(),
+        Correction::Posterization { levels } => format!("posterization: {levels} levels"),
+        Correction::Threshold { level } => format!("threshold: {level}"),
+        Correction::GradientMap { stops } => format!("gradient map: {} stops", stops.len()),
+        Correction::Unknown { kind, payload } => {
+            format!("unknown kind {kind}: {} payload bytes", payload.len())
+        }
+        _ => format!("future correction kind {}", correction.kind()),
+    }
 }

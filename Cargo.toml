@@ -42,6 +42,34 @@ name = "inspect_rulers"
 required-features = ["sqlite"]
 
 [[example]]
+name = "inspect_document"
+required-features = ["sqlite"]
+
+[[example]]
+name = "export_preview"
+required-features = ["sqlite"]
+
+[[example]]
+name = "inspect_text"
+required-features = ["sqlite"]
+
+[[example]]
+name = "inspect_vector"
+required-features = ["sqlite"]
+
+[[example]]
+name = "export_raster"
+required-features = ["raster"]
+
+[[example]]
+name = "inspect_animation"
+required-features = ["animation"]
+
+[[example]]
+name = "inspect_timelapse"
+required-features = ["timelapse"]
+
+[[example]]
 name = "rewrite"
 required-features = ["write"]
 

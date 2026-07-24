@@ -1,12 +1,22 @@
+//! Discovers ruler layers and summarizes validated vector/special-ruler metadata.
+
 use std::{env, fs::File, process::ExitCode};
 
 use clipfile::{ClipFile, Limits};
 
 fn main() -> ExitCode {
-    let Some(path) = env::args_os().nth(1) else {
-        eprintln!("usage: inspect_rulers <file.clip>");
-        return ExitCode::FAILURE;
+    // Accept one input path so the example has predictable CLI behavior.
+    let mut arguments = env::args_os().skip(1);
+    let Some(path) = arguments.next() else {
+        eprintln!("usage: cargo run --features sqlite --example inspect_rulers -- <file.clip>");
+        return ExitCode::from(2);
     };
+    if arguments.next().is_some() {
+        eprintln!("usage: cargo run --features sqlite --example inspect_rulers -- <file.clip>");
+        return ExitCode::from(2);
+    }
+
+    // Report all validation or schema errors without panicking.
     match inspect(path) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -17,6 +27,7 @@ fn main() -> ExitCode {
 }
 
 fn inspect(path: impl AsRef<std::path::Path>) -> clipfile::Result<()> {
+    // Ruler ownership and special-ruler tables live in the embedded database.
     let mut clip = ClipFile::open(File::open(path)?)?;
     let database = clip.open_database()?;
     if !database.schema().has_column("Layer", "RulerRange") {
@@ -24,6 +35,7 @@ fn inspect(path: impl AsRef<std::path::Path>) -> clipfile::Result<()> {
         return Ok(());
     }
 
+    // Discover candidate layer IDs before asking for their typed ruler data.
     let mut statement = database
         .connection()
         .prepare("SELECT MainId FROM Layer WHERE RulerRange IS NOT NULL ORDER BY MainId")?;
@@ -32,9 +44,11 @@ fn inspect(path: impl AsRef<std::path::Path>) -> clipfile::Result<()> {
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(statement);
 
+    // ruler_layer validates manager chains, curve records, and perspective links.
     println!("ruler layers: {}", layer_ids.len());
     for layer_id in layer_ids {
         if let Some(layer) = database.ruler_layer(layer_id, Limits::default())? {
+            // RulerKind gives callers a stable summary without matching every variant.
             let kinds = layer
                 .rulers()
                 .iter()

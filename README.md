@@ -109,6 +109,9 @@ cargo run --features write --example rewrite -- input.clip new-output.clip
 cargo run --features "write,raster" --example invert_first_tile -- input.clip new-output.clip 42
 ```
 
+Purpose-specific examples, required features, and safety notes are listed in
+[the examples guide](examples/README.md).
+
 The optional `sqlite` feature uses a bundled SQLite build for reproducible
 linking across supported platforms. It provides `ClipFile::open_database`,
 runtime table/column discovery, integrity checking, and cross-validation of

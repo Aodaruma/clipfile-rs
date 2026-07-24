@@ -1,8 +1,14 @@
+//! General-purpose structural inspector for container and optional feature data.
+//!
+//! Prefer the smaller, feature-specific examples when learning one API. This
+//! program is intentionally broad so it can serve as a quick diagnostic tool.
+
 use std::{env, fs::File, process::ExitCode};
 
 use clipfile::{ChunkKind, ClipFile, ExternalBody};
 
 fn main() -> ExitCode {
+    // Parse the input path and independent inspection flags without extra dependencies.
     let arguments = env::args_os().skip(1).collect::<Vec<_>>();
     let Some(path) = arguments.first() else {
         eprintln!(
@@ -11,6 +17,22 @@ fn main() -> ExitCode {
         );
         return ExitCode::from(2);
     };
+    let known_flags = [
+        "--deep",
+        "--database",
+        "--raster",
+        "--document",
+        "--animation",
+        "--timelapse",
+    ];
+    if let Some(argument) = arguments
+        .iter()
+        .skip(1)
+        .find(|value| !known_flags.iter().any(|flag| value == flag))
+    {
+        eprintln!("unknown option: {argument:?}");
+        return ExitCode::from(2);
+    }
     let deep = arguments.iter().skip(1).any(|value| value == "--deep");
     let database = arguments.iter().skip(1).any(|value| value == "--database");
     let raster = arguments.iter().skip(1).any(|value| value == "--raster");
@@ -18,6 +40,7 @@ fn main() -> ExitCode {
     let animation = arguments.iter().skip(1).any(|value| value == "--animation");
     let timelapse = arguments.iter().skip(1).any(|value| value == "--timelapse");
 
+    // Turn the library Result into a conventional command-line exit status.
     match inspect(path, deep, database, raster, document, animation, timelapse) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -36,6 +59,7 @@ fn inspect(
     animation: bool,
     timelapse: bool,
 ) -> clipfile::Result<()> {
+    // Opening reads only the bounded root and file headers.
     let mut clip = ClipFile::open(File::open(path)?)?;
     let root = clip.root_header();
     let header = clip.file_header();
@@ -44,9 +68,12 @@ fn inspect(
     println!("database offset: {}", header.database_offset());
     println!("file identifier: {}", hex(header.identifier()));
 
+    // Full structural validation streams over the top-level container.
     let summary = clip.validate()?;
     println!("external chunks: {}", summary.external_chunks());
     println!("SQLite payload size: {}", summary.database_payload_size());
+
+    // Optional sections are kept independent so callers pay only for requested work.
     if deep {
         inspect_external_objects(&mut clip)?;
     }
@@ -59,11 +86,13 @@ fn inspect(
 }
 
 #[cfg(feature = "timelapse")]
+/// Summarizes validated time-lapse chains without retaining decoded frame payloads.
 fn inspect_time_lapse_if_requested<R: std::io::Read + std::io::Seek>(
     clip: &mut ClipFile<R>,
     requested: bool,
 ) -> clipfile::Result<()> {
     if requested {
+        // Metadata counts are cheap; use inspect_timelapse for internal frame indexes.
         let database = clip.open_database()?;
         if let Some(time_lapse) = database.time_lapse(clip.limits())? {
             let records = time_lapse
@@ -95,6 +124,7 @@ fn inspect_time_lapse_if_requested<R: std::io::Read + std::io::Seek>(
 }
 
 #[cfg(not(feature = "timelapse"))]
+/// Explains the required feature when this source was built without time-lapse support.
 fn inspect_time_lapse_if_requested<R: std::io::Read + std::io::Seek>(
     _clip: &mut ClipFile<R>,
     requested: bool,
@@ -106,11 +136,13 @@ fn inspect_time_lapse_if_requested<R: std::io::Read + std::io::Seek>(
 }
 
 #[cfg(feature = "animation")]
+/// Summarizes the selected timeline and highlights verified 2D-camera tracks.
 fn inspect_animation_if_requested<R: std::io::Read + std::io::Seek>(
     clip: &mut ClipFile<R>,
     requested: bool,
 ) -> clipfile::Result<()> {
     if requested {
+        // read_animation validates track chains and bounded external mixer payloads.
         let database = clip.open_database()?;
         if let Some(animation) = clip.read_animation(&database, clip.limits())? {
             let keyframes = animation
@@ -159,6 +191,8 @@ fn inspect_animation_if_requested<R: std::io::Read + std::io::Seek>(
                 animation.tracks().len(),
                 keyframes,
             );
+
+            // Camera tracks can be joined to their typed layer snapshot.
             for track in animation
                 .animation_tracks()
                 .iter()
@@ -191,6 +225,7 @@ fn inspect_animation_if_requested<R: std::io::Read + std::io::Seek>(
 }
 
 #[cfg(not(feature = "animation"))]
+/// Explains the required feature when this source was built without animation support.
 fn inspect_animation_if_requested<R: std::io::Read + std::io::Seek>(
     _clip: &mut ClipFile<R>,
     requested: bool,
@@ -202,6 +237,7 @@ fn inspect_animation_if_requested<R: std::io::Read + std::io::Seek>(
 }
 
 #[cfg(feature = "sqlite")]
+/// Loads the high-level project/canvas/layer model and reports tree reachability.
 fn inspect_document_if_requested<R: std::io::Read + std::io::Seek>(
     clip: &mut ClipFile<R>,
     requested: bool,
@@ -227,6 +263,7 @@ fn inspect_document_if_requested<R: std::io::Read + std::io::Seek>(
 }
 
 #[cfg(not(feature = "sqlite"))]
+/// Explains the required feature when this source was built without SQLite support.
 fn inspect_document_if_requested<R: std::io::Read + std::io::Seek>(
     _clip: &mut ClipFile<R>,
     requested: bool,
@@ -238,6 +275,7 @@ fn inspect_document_if_requested<R: std::io::Read + std::io::Seek>(
 }
 
 #[cfg(feature = "raster")]
+/// Validates offscreen metadata and decodes the first supported render raster.
 fn inspect_raster_if_requested<R: std::io::Read + std::io::Seek>(
     clip: &mut ClipFile<R>,
     requested: bool,
@@ -246,6 +284,8 @@ fn inspect_raster_if_requested<R: std::io::Read + std::io::Seek>(
         return Ok(());
     }
     let database = clip.open_database()?;
+
+    // Validate every attribute blob before selecting a layer to decode.
     let attribute_blobs = {
         let mut statement = database
             .connection()
@@ -258,6 +298,8 @@ fn inspect_raster_if_requested<R: std::io::Read + std::io::Seek>(
         clipfile::OffscreenAttributes::parse(attributes)?;
     }
     println!("validated offscreen attributes: {}", attribute_blobs.len());
+
+    // Raw SQL is used only to discover layers with indexed external BlockData.
     let layer_ids = {
         let mut statement = database.connection().prepare(
             "SELECT l.MainId FROM Layer AS l \
@@ -273,6 +315,8 @@ fn inspect_raster_if_requested<R: std::io::Read + std::io::Seek>(
     };
     println!("raster candidates: {}", layer_ids.len());
     let mut first_unsupported = None;
+
+    // Decode one supported image; unsupported layouts remain explicit errors.
     for layer_id in layer_ids {
         let Some(source) = database.layer_raster_source(layer_id)? else {
             continue;
@@ -304,6 +348,7 @@ fn inspect_raster_if_requested<R: std::io::Read + std::io::Seek>(
 }
 
 #[cfg(not(feature = "raster"))]
+/// Explains the required feature when this source was built without raster support.
 fn inspect_raster_if_requested<R: std::io::Read + std::io::Seek>(
     _clip: &mut ClipFile<R>,
     requested: bool,
@@ -315,6 +360,7 @@ fn inspect_raster_if_requested<R: std::io::Read + std::io::Seek>(
 }
 
 #[cfg(feature = "sqlite")]
+/// Runs SQLite integrity and external-index cross-validation.
 fn inspect_database_if_requested<R: std::io::Read + std::io::Seek>(
     clip: &mut ClipFile<R>,
     requested: bool,
@@ -333,6 +379,7 @@ fn inspect_database_if_requested<R: std::io::Read + std::io::Seek>(
 }
 
 #[cfg(not(feature = "sqlite"))]
+/// Explains the required feature when this source was built without SQLite support.
 fn inspect_database_if_requested<R: std::io::Read + std::io::Seek>(
     _clip: &mut ClipFile<R>,
     requested: bool,
@@ -343,6 +390,7 @@ fn inspect_database_if_requested<R: std::io::Read + std::io::Seek>(
     Ok(())
 }
 
+/// Classifies all external bodies and parses BlockData metadata without decoding tiles.
 fn inspect_external_objects<R: std::io::Read + std::io::Seek>(
     clip: &mut ClipFile<R>,
 ) -> clipfile::Result<()> {
@@ -353,6 +401,8 @@ fn inspect_external_objects<R: std::io::Read + std::io::Seek>(
     let mut compressed_objects = 0_u64;
     let mut media_objects = 0_u64;
     let mut unknown_objects = 0_u64;
+
+    // Chunk headers are collected first because inspecting bodies also seeks the reader.
     for chunk in chunks
         .iter()
         .filter(|chunk| chunk.kind() == ChunkKind::External)
@@ -379,6 +429,7 @@ fn inspect_external_objects<R: std::io::Read + std::io::Seek>(
     Ok(())
 }
 
+/// Formats an opaque identifier without adding a hex dependency.
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
 

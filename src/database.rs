@@ -180,6 +180,7 @@ impl Database {
         &self.connection
     }
 
+    #[cfg(feature = "write")]
     pub(crate) fn connection_mut(&mut self) -> &mut Connection {
         &mut self.connection
     }
