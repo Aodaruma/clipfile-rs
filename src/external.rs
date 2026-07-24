@@ -101,6 +101,11 @@ pub struct BlockParameters {
 }
 
 impl BlockParameters {
+    #[cfg(all(test, any(feature = "raster", feature = "write")))]
+    pub(crate) const fn from_raw(raw: [u8; 12]) -> Self {
+        Self { raw }
+    }
+
     /// Returns the uninterpreted bytes for forward-compatible access.
     #[must_use]
     pub const fn raw(&self) -> [u8; 12] {

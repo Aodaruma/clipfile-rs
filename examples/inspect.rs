@@ -2,6 +2,9 @@
 //!
 //! Prefer the smaller, feature-specific examples when learning one API. This
 //! program is intentionally broad so it can serve as a quick diagnostic tool.
+//! Its base, `--deep`, and `--database` modes also demonstrate
+//! forward-compatible structural escape hatches; semantic feature modes use
+//! typed APIs.
 
 use std::{env, fs::File, process::ExitCode};
 
@@ -285,42 +288,19 @@ fn inspect_raster_if_requested<R: std::io::Read + std::io::Seek>(
     }
     let database = clip.open_database()?;
 
-    // Validate every attribute blob before selecting a layer to decode.
-    let attribute_blobs = {
-        let mut statement = database
-            .connection()
-            .prepare("SELECT Attribute FROM Offscreen WHERE Attribute IS NOT NULL")?;
-        statement
-            .query_map([], |row| row.get::<_, Vec<u8>>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-    };
-    for attributes in &attribute_blobs {
-        clipfile::OffscreenAttributes::parse(attributes)?;
+    // Use the document model to discover layer-owned render rasters.
+    let document = clipfile::Document::load(&database, clip.limits())?;
+    let mut sources = Vec::new();
+    for layer in document.layers() {
+        if let Some(source) = database.layer_raster_source(layer.id())? {
+            sources.push((layer.id(), source));
+        }
     }
-    println!("validated offscreen attributes: {}", attribute_blobs.len());
-
-    // Raw SQL is used only to discover layers with indexed external BlockData.
-    let layer_ids = {
-        let mut statement = database.connection().prepare(
-            "SELECT l.MainId FROM Layer AS l \
-             JOIN Mipmap AS m ON m.MainId = l.LayerRenderMipmap \
-             JOIN MipmapInfo AS mi ON mi.MainId = m.BaseMipmapInfo \
-             JOIN Offscreen AS o ON o.MainId = mi.Offscreen \
-             JOIN ExternalChunk AS e ON CAST(e.ExternalID AS BLOB) = CAST(o.BlockData AS BLOB) \
-             ORDER BY l.MainId",
-        )?;
-        statement
-            .query_map([], |row| row.get::<_, i64>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-    };
-    println!("raster candidates: {}", layer_ids.len());
+    println!("raster candidates: {}", sources.len());
     let mut first_unsupported = None;
 
     // Decode one supported image; unsupported layouts remain explicit errors.
-    for layer_id in layer_ids {
-        let Some(source) = database.layer_raster_source(layer_id)? else {
-            continue;
-        };
+    for (layer_id, source) in sources {
         match clip.decode_raster(&database, &source) {
             Ok(image) => {
                 println!(
@@ -328,7 +308,7 @@ fn inspect_raster_if_requested<R: std::io::Read + std::io::Seek>(
                     image.width(),
                     image.height(),
                     image.format(),
-                    image.pixels().len(),
+                    image.byte_len(),
                     image.data_state()
                 );
                 return Ok(());

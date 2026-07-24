@@ -3,13 +3,14 @@
 ## 現在の構成
 
 - crate名: `clipfile`
-- version: `0.5.0`
+- version: `1.0.0`
 - edition: Rust 2024
 - MSRV: Rust 1.85
 - license: MIT
 - 既定featureの依存: なし
 - `sqlite` feature: `rusqlite` と同梱SQLite（システムのSQLite開発環境は不要）
 - `raster` feature: `sqlite` + pure-Rust zlib展開
+- `image` feature: `raster` + image-rs `DynamicImage` 変換とPNG codec
 - `animation` feature: `sqlite` + BINCタイムライン曲線
 - `timelapse` feature: `sqlite` + zlibタイムラプスBLOB
 - `write` feature: `sqlite` + zlib再圧縮と検証済みcontainer再構築

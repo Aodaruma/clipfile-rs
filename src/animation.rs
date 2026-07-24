@@ -143,6 +143,24 @@ impl AnimationTrackKind {
         self.0
     }
 
+    /// Stable semantic name for a verified track kind.
+    ///
+    /// Unknown future values return `None`; use [`Self::raw`] when preserving
+    /// or diagnosing them.
+    #[must_use]
+    pub const fn known_name(self) -> Option<&'static str> {
+        match self.0 {
+            1000 => Some("folder"),
+            2000 => Some("image cel"),
+            2001 => Some("static image"),
+            2003 => Some("paper"),
+            2005 => Some("2D camera"),
+            4000 => Some("play time"),
+            4001 => Some("audio"),
+            _ => None,
+        }
+    }
+
     /// Whether this is the verified image-cel selection kind (`2000`).
     #[must_use]
     pub const fn is_image_cel(self) -> bool {
@@ -305,6 +323,24 @@ impl AnimationCurveKeyframeInsert {
         }
     }
 
+    /// Copies every optional field represented by a validated existing key.
+    ///
+    /// Only the time and numeric value are replaced. This is preferred when
+    /// inserting into an existing curve because callers do not need to track
+    /// the curve's optional-array layout themselves.
+    #[must_use]
+    pub fn from_template(template: &AnimationCurveKeyframe, time_60hz: f32, value: f32) -> Self {
+        Self {
+            time_60hz,
+            value,
+            tag: template.tag.clone(),
+            interpolation: template.interpolation.clone(),
+            left_slope: template.left_slope,
+            right_slope: template.right_slope,
+            revise_constant: template.revise_constant,
+        }
+    }
+
     /// Sets the optional string tag field.
     #[must_use]
     pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
@@ -402,6 +438,44 @@ impl ImageCelTrackCloneOptions {
         Self {
             keyframes: keyframes.into_iter().collect(),
         }
+    }
+
+    /// Creates a cel sequence while assigning internal numeric values.
+    ///
+    /// Each input item contains a 60 Hz key time and a target child-layer tag.
+    /// Repeated tags reuse the same value; distinct tags receive consecutive
+    /// values in first-appearance order. This avoids exposing the redundant
+    /// numeric representation required by the on-disk curve and value map.
+    pub fn from_timed_cels<I, S>(keyframes: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = (f32, S)>,
+        S: Into<String>,
+    {
+        let mut values_by_tag = BTreeMap::<String, u32>::new();
+        let mut assigned = Vec::new();
+        for (time_60hz, tag) in keyframes {
+            let tag = tag.into();
+            let numeric_value = if let Some(value) = values_by_tag.get(&tag) {
+                *value
+            } else {
+                let value =
+                    u32::try_from(values_by_tag.len()).map_err(|_| Error::OffsetOverflow)?;
+                if !u32_is_exactly_representable_as_f32(value) {
+                    return Err(Error::InvalidWrite {
+                        reason: "image-cel sequence has too many distinct tags".to_owned(),
+                    });
+                }
+                values_by_tag.insert(tag.clone(), value);
+                value
+            };
+            assigned.push(ImageCelTrackKeyframe::new(time_60hz, numeric_value, tag));
+        }
+        if assigned.is_empty() {
+            return Err(Error::InvalidWrite {
+                reason: "image-cel sequence requires at least one key".to_owned(),
+            });
+        }
+        Ok(Self::new(assigned))
     }
 
     /// Requested image-cel keys.
@@ -1486,6 +1560,40 @@ impl<R: Read + Seek> ClipFile<R> {
         } else {
             timelines[0].clone()
         };
+        Ok(Some(
+            self.read_animation_timeline(database, timeline, limits)?,
+        ))
+    }
+
+    /// Reads one timeline and all tracks in its validated chain.
+    ///
+    /// This is the explicit counterpart to [`Self::read_animation`], which
+    /// selects the enabled timeline. An unknown ID or a file without timelines
+    /// returns `None`.
+    pub fn read_animation_for_timeline(
+        &mut self,
+        database: &Database,
+        timeline_id: i64,
+        limits: Limits,
+    ) -> Result<Option<Animation>> {
+        let timelines = database.timelines(limits)?;
+        let Some(timeline) = timelines
+            .into_iter()
+            .find(|timeline| timeline.id == timeline_id)
+        else {
+            return Ok(None);
+        };
+        Ok(Some(
+            self.read_animation_timeline(database, timeline, limits)?,
+        ))
+    }
+
+    fn read_animation_timeline(
+        &mut self,
+        database: &Database,
+        timeline: Timeline,
+        limits: Limits,
+    ) -> Result<Animation> {
         let sources = animation_track_sources(database, &timeline, limits)?;
         let layers = layer_uuid_ids(database, limits)?;
         let mut tracks = Vec::new();
@@ -1678,11 +1786,11 @@ impl<R: Read + Seek> ClipFile<R> {
                 "multiple cel tracks resolve to the same layer",
             ));
         }
-        Ok(Some(Animation {
+        Ok(Animation {
             timeline,
             tracks,
             animation_tracks,
-        }))
+        })
     }
 }
 
@@ -6501,6 +6609,51 @@ mod tests {
         assert_eq!(track.cel_at_frame(0.0, 24.0), Some("A"));
         assert_eq!(track.cel_at_frame(23.0, 24.0), Some("A"));
         assert_eq!(track.cel_at_frame(24.0, 24.0), Some("B"));
+
+        let explicit = clip
+            .read_animation_for_timeline(&database, 1, Limits::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(explicit.timeline().id(), 1);
+        assert!(
+            clip.read_animation_for_timeline(&database, 999, Limits::default())
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[cfg(feature = "write")]
+    #[test]
+    fn high_level_animation_builders_preserve_internal_fields() {
+        let template = AnimationCurveKeyframe {
+            time_60hz: 0.0,
+            value: 1.0,
+            tag: Some("A".to_owned()),
+            interpolation: Some("Linear".to_owned()),
+            left_slope: Some(2.0),
+            right_slope: Some(3.0),
+            revise_constant: Some(1),
+        };
+        let insertion = AnimationCurveKeyframeInsert::from_template(&template, 60.0, 4.0);
+        assert_eq!(insertion.time_60hz, 60.0);
+        assert_eq!(insertion.value, 4.0);
+        assert_eq!(insertion.tag.as_deref(), Some("A"));
+        assert_eq!(insertion.interpolation.as_deref(), Some("Linear"));
+        assert_eq!(insertion.left_slope, Some(2.0));
+        assert_eq!(insertion.right_slope, Some(3.0));
+        assert_eq!(insertion.revise_constant, Some(1));
+
+        let options =
+            ImageCelTrackCloneOptions::from_timed_cels([(0.0, "A"), (30.0, "B"), (60.0, "A")])
+                .unwrap();
+        assert_eq!(
+            options
+                .keyframes()
+                .iter()
+                .map(ImageCelTrackKeyframe::numeric_value)
+                .collect::<Vec<_>>(),
+            [0, 1, 0]
+        );
     }
 
     #[cfg(feature = "write")]
@@ -7549,6 +7702,7 @@ mod tests {
     #[test]
     fn classifies_verified_track_kinds() {
         assert!(AnimationTrackKind::new(1000).is_folder());
+        assert_eq!(AnimationTrackKind::new(1000).known_name(), Some("folder"));
         assert!(AnimationTrackKind::new(2000).is_image_cel());
         assert!(AnimationTrackKind::new(2001).is_static_image());
         assert!(AnimationTrackKind::new(2003).is_paper());
@@ -7556,5 +7710,6 @@ mod tests {
         assert!(AnimationTrackKind::new(4000).is_play_time());
         assert!(AnimationTrackKind::new(4001).is_audio());
         assert!(!AnimationTrackKind::new(9999).is_static_image());
+        assert_eq!(AnimationTrackKind::new(9999).known_name(), None);
     }
 }

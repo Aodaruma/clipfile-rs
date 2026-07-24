@@ -1,11 +1,10 @@
 //! Replaces a complete existing raster through row-major semantic pixels.
 //!
-//! RGB channels are inverted while alpha is preserved. Grayscale rasters,
-//! including supported layer masks, invert their single channel.
+//! Color/value channels are inverted while alpha is preserved.
 
 use std::{env, fs::File};
 
-use clipfile::{BlockChecksumMode, ClipFile, PixelFormat};
+use clipfile::{ClipFile, RasterImage};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Select one existing render raster and a new output path.
@@ -35,38 +34,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source = database
         .layer_raster_source(layer_id)?
         .ok_or_else(|| format!("layer {layer_id} has no render raster"))?;
-    let image = clip.decode_raster(&database, &source)?;
-    let width = image.width();
-    let height = image.height();
-    let format = image.format();
-    let mut pixels = image.into_pixels();
+    let mut raster: RasterImage = clip.decode_raster(&database, &source)?;
+    let width = raster.width();
+    let height = raster.height();
+    let format = raster.format();
     drop(database);
 
-    // Apply a format-aware edit instead of changing native tile padding.
-    match format {
-        PixelFormat::Rgba8 => {
-            for pixel in pixels.chunks_exact_mut(4) {
-                pixel[0] = u8::MAX - pixel[0];
-                pixel[1] = u8::MAX - pixel[1];
-                pixel[2] = u8::MAX - pixel[2];
-            }
-        }
-        PixelFormat::Gray8 => {
-            for value in &mut pixels {
-                *value = u8::MAX - *value;
-            }
-        }
-        _ => return Err("this example does not support the decoded pixel format".into()),
+    // Apply one format-independent operation; independent alpha is preserved.
+    for mut pixel in raster.pixel_iter_mut() {
+        pixel.invert();
     }
 
-    // Rebuild only changed tiles and write a separately validated CLIP file.
+    // Rebuild changed tiles with the compatible checksum selected internally.
     let mut writer = clip.writer()?;
-    let raster = writer.replace_layer_raster_pixels(
-        layer_id,
-        format,
-        pixels,
-        BlockChecksumMode::CspCompatible,
-    )?;
+    let raster = writer.replace_layer_raster(layer_id, raster)?;
     let output_summary = writer.write_to_path(output)?;
     println!(
         "wrote {width}x{height} {format:?}: {}/{} tile(s) changed; output {} bytes",

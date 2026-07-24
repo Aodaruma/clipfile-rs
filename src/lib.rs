@@ -1,11 +1,12 @@
-//! Low-level, streaming access to CLIP STUDIO PAINT container files.
+//! Validated, forward-compatible access to CLIP STUDIO PAINT files.
 //!
 //! The on-disk format is proprietary and not officially documented. This
 //! crate focuses on the portions that can be validated consistently: the
 //! `CSFCHUNK` envelope, top-level chunks, the file header, and external chunk
-//! headers. Optional features add document, image, animation, time-lapse, and
-//! conservative low-level rewriting APIs as those parts become sufficiently
-//! well understood.
+//! headers. Optional features add typed document, image, animation, time-lapse,
+//! and conservative rewriting APIs as those parts become sufficiently well
+//! understood. Low-level container, SQLite, raw-value, and opaque-body access
+//! remains available as an escape hatch for future or not-yet-understood data.
 
 #[cfg(feature = "animation")]
 mod animation;
@@ -72,8 +73,10 @@ pub use limits::Limits;
 pub use model::{BlendMode, Canvas, CanvasPreview, Document, Layer, LayerKind, LayerTree, Project};
 #[cfg(feature = "raster")]
 pub use raster::{
-    DecodedTile, OffscreenAttributes, PixelFormat, PixelPacking, RasterDataState, RasterImage,
-    RasterSource,
+    DecodedTile, Gray8Pixel, Gray8PixelMut, Gray8Pixels, Gray8PixelsMut, GrayAlpha8Pixel,
+    GrayAlpha8PixelMut, GrayAlpha8Pixels, GrayAlpha8PixelsMut, OffscreenAttributes, PixelFormat,
+    PixelPacking, RasterDataState, RasterImage, RasterPixel, RasterPixelMut, RasterPixels,
+    RasterPixelsMut, RasterSource, Rgba8Pixel, Rgba8PixelMut, Rgba8Pixels, Rgba8PixelsMut,
 };
 #[cfg(feature = "sqlite")]
 pub use ruler::{

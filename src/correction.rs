@@ -397,6 +397,56 @@ impl CorrectionLayerData {
 }
 
 impl Database {
+    /// Discovers and validates every layer with correction parameters.
+    ///
+    /// Schema probing and candidate-layer queries are handled internally. The
+    /// result is ordered by layer ID. Files without correction-layer columns
+    /// return an empty vector.
+    pub fn correction_layers(&self, limits: Limits) -> Result<Vec<CorrectionLayerData>> {
+        if self.schema().table("Layer").is_none()
+            || !self.schema().has_column("Layer", "FilterLayerInfo")
+        {
+            return Ok(Vec::new());
+        }
+        self.require_column("Layer", "MainId")?;
+
+        let mut statement = self.connection().prepare(
+            "SELECT MainId FROM Layer \
+             WHERE FilterLayerInfo IS NOT NULL ORDER BY MainId",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut layer_ids = Vec::new();
+        while let Some(row) = rows.next()? {
+            let layer_id: i64 = row.get(0)?;
+            if layer_ids.last() == Some(&layer_id) {
+                return Err(correction_error(format!(
+                    "correction layer MainId {layer_id} is not unique"
+                )));
+            }
+            if layer_ids.len() as u64 >= limits.max_layers() {
+                return Err(Error::LimitExceeded {
+                    resource: "correction layers",
+                    value: layer_ids.len() as u64 + 1,
+                    limit: limits.max_layers(),
+                });
+            }
+            layer_ids.push(layer_id);
+        }
+        drop(rows);
+        drop(statement);
+
+        let mut layers = Vec::with_capacity(layer_ids.len());
+        for layer_id in layer_ids {
+            let layer = self.correction_layer(layer_id, limits)?.ok_or_else(|| {
+                correction_error(format!(
+                    "layer {layer_id} was selected as a correction layer but has no parameters"
+                ))
+            })?;
+            layers.push(layer);
+        }
+        Ok(layers)
+    }
+
     /// Reads and validates correction parameters for one layer.
     ///
     /// Files without the optional correction column, unknown layer IDs, and
@@ -953,6 +1003,39 @@ mod tests {
             database.correction_layer(1, Limits::default().with_max_correction_bytes(4)),
             Err(Error::LimitExceeded {
                 resource: "correction-layer bytes",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn discovers_correction_layers_without_exposing_sql() {
+        let payload = wrap(8, &127_i32.to_be_bytes());
+        let database = database(&payload);
+        database
+            .connection()
+            .execute("INSERT INTO Layer VALUES (2, 4098, NULL, NULL, NULL)", [])
+            .unwrap();
+        database
+            .connection()
+            .execute(
+                "INSERT INTO Layer VALUES (3, 4098, NULL, NULL, ?1)",
+                params![payload],
+            )
+            .unwrap();
+
+        let layers = database.correction_layers(Limits::default()).unwrap();
+        assert_eq!(
+            layers
+                .iter()
+                .map(CorrectionLayerData::layer_id)
+                .collect::<Vec<_>>(),
+            [1, 3]
+        );
+        assert!(matches!(
+            database.correction_layers(Limits::default().with_max_layers(1)),
+            Err(Error::LimitExceeded {
+                resource: "correction layers",
                 ..
             })
         ));

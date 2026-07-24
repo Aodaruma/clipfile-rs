@@ -88,6 +88,19 @@ impl TimeLapseFrameKind {
         self.0
     }
 
+    /// Stable semantic name for a verified frame kind.
+    ///
+    /// Unknown future FourCC values return `None`; use [`Self::raw`] when an
+    /// application needs to preserve or diagnose them.
+    #[must_use]
+    pub const fn known_name(self) -> Option<&'static str> {
+        match &self.0 {
+            b"GMIK" => Some("full-canvas key frame"),
+            b"GMID" => Some("delta patch"),
+            _ => None,
+        }
+    }
+
     /// Whether the record kind is the observed `GMIK`.
     #[must_use]
     pub fn is_gmik(self) -> bool {
@@ -1250,6 +1263,8 @@ mod tests {
         assert_eq!(frames.len(), 2);
         assert!(frames[0].kind().is_gmik());
         assert!(frames[1].kind().is_gmid());
+        assert_eq!(frames[0].kind().known_name(), Some("full-canvas key frame"));
+        assert_eq!(frames[1].kind().known_name(), Some("delta patch"));
         assert!(frames[0].kind().is_key_frame());
         assert!(frames[1].kind().is_delta_frame());
         assert_eq!(frames[0].record_offset(), 0);

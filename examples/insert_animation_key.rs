@@ -45,22 +45,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("the requested template key was not found")?;
     drop(database);
 
-    // Supply exactly the optional arrays represented by the template key.
-    let mut insertion = AnimationCurveKeyframeInsert::new(time_60hz, value);
-    if let Some(tag) = key.tag() {
-        insertion = insertion.with_tag(tag);
-    }
-    if let Some(interpolation) = key.interpolation() {
-        insertion = insertion.with_interpolation(interpolation);
-    }
-    match (key.left_slope(), key.right_slope()) {
-        (Some(left), Some(right)) => insertion = insertion.with_slopes(left, right),
-        (None, None) => {}
-        _ => return Err("the key contains only one slope and cannot be cloned safely".into()),
-    }
-    if let Some(revise_constant) = key.revise_constant() {
-        insertion = insertion.with_revise_constant(revise_constant);
-    }
+    // Let the library preserve every optional array represented by the template.
+    let insertion = AnimationCurveKeyframeInsert::from_template(&key, time_60hz, value);
 
     // Insert primary and matching secondary records together, then validate output.
     let mut writer = clip.writer()?;

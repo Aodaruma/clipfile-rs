@@ -1,6 +1,6 @@
 [package]
 name = "clipfile"
-version = "1.0.0-rc.1"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.85"
 description = "A streaming parser and toolkit for CLIP STUDIO PAINT files"
@@ -12,16 +12,18 @@ readme = "README.md"
 keywords = ["clip-studio", "clip", "parser", "graphics"]
 categories = ["parser-implementations", "multimedia::images"]
 publish = ["crates-io"]
-exclude = ["/tester/**"]
+exclude = ["/tester/**", "/.vscode/**"]
 
 [dependencies]
 flate2 = { version = "1.1.9", optional = true }
+image = { version = "=0.25.9", default-features = false, features = ["png"], optional = true }
 rusqlite = { version = "0.39.0", default-features = false, features = ["bundled", "serialize"], optional = true }
 
 [features]
 default = []
 sqlite = ["dep:rusqlite"]
 raster = ["sqlite", "dep:flate2"]
+image = ["raster", "dep:image"]
 animation = ["sqlite", "dep:flate2"]
 timelapse = ["sqlite", "dep:flate2"]
 write = ["sqlite", "dep:flate2"]
@@ -59,7 +61,7 @@ required-features = ["sqlite"]
 
 [[example]]
 name = "export_raster"
-required-features = ["raster"]
+required-features = ["image"]
 
 [[example]]
 name = "inspect_animation"

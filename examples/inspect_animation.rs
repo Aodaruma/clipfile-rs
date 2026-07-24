@@ -37,10 +37,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Generic tracks retain unknown numeric kinds and expose all decoded curve groups.
     for track in animation.animation_tracks() {
+        let kind = track.kind();
         println!(
-            "track {}: kind={}, layer={:?}, values={}, primary curves={}, secondary curves={}",
+            "track {}: kind={} (raw {}), layer={:?}, values={}, primary curves={}, secondary curves={}",
             track.id(),
-            track.kind().raw(),
+            kind.known_name().unwrap_or("unknown"),
+            kind.raw(),
             track.layer_id(),
             track.values().len(),
             track.curves().len(),

@@ -34,32 +34,18 @@ fn inspect(path: impl AsRef<std::path::Path>) -> clipfile::Result<()> {
     // Correction metadata lives in the embedded SQLite database.
     let mut clip = ClipFile::open(File::open(path)?)?;
     let database = clip.open_database()?;
-    if !database.schema().has_column("Layer", "FilterLayerInfo") {
-        println!("correction layers: 0");
-        return Ok(());
-    }
 
-    // The generic Database API can discover candidate layer IDs across schema versions.
-    let mut statement = database
-        .connection()
-        .prepare("SELECT MainId FROM Layer WHERE FilterLayerInfo IS NOT NULL ORDER BY MainId")?;
-    let layer_ids = statement
-        .query_map([], |row| row.get::<_, i64>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    drop(statement);
-
-    // correction_layer validates each payload and returns a typed enum.
-    println!("correction layers: {}", layer_ids.len());
-    for layer_id in layer_ids {
-        if let Some(layer) = database.correction_layer(layer_id, Limits::default())? {
-            println!(
-                "layer={}\ttype={}\tcorrection={}\tbytes={}",
-                layer.layer_id(),
-                layer.layer_type(),
-                correction_summary(layer.correction()),
-                layer.raw_attributes().len()
-            );
-        }
+    // Discover candidates and decode them without schema checks or SQL.
+    let layers = database.correction_layers(Limits::default())?;
+    println!("correction layers: {}", layers.len());
+    for layer in layers {
+        println!(
+            "layer={}\ttype={}\tcorrection={}\tbytes={}",
+            layer.layer_id(),
+            layer.layer_type(),
+            correction_summary(layer.correction()),
+            layer.raw_attributes().len()
+        );
     }
     Ok(())
 }

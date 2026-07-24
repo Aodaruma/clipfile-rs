@@ -5,7 +5,7 @@
 ## 1.0の対象範囲
 
 - container、SQLite index、document/layer treeの上限付き読み取り
-- RGBA8/Gray8 rasterの復号・全画素置換とplain raster layerのtemplate clone
+- RGBA8/Gray8/GrayAlpha8 rasterの復号・全画素置換とplain raster layerのtemplate clone
 - text本文の保守的置換、template-based object追加、1 objectを残す削除
 - 検証済みvector layoutの平行移動、stroke clone、stroke削除
 - animation timeline/track/curve読み取り、既存値・key・cel tag編集
@@ -26,7 +26,7 @@ templateなしのstyle/brush/animation metadata生成、派生raster cacheとcan
 - [x] 0.5系に対する公開API差分とSemVer方針の最終確認
 - [x] 新規raster/vector/text/animation出力のアプリ再読込確認
 - [x] README、writing guide、examples guide、CHANGELOGのAPI名と制約の一致
-- [ ] release version、tag、crates.io dry-run、GitHub Release内容の最終確認
+- [x] release version、crates.io dry-run、tagとGitHub Release workflowの整合確認
 
 検証用ファイル、生成script、画面出力はGit管理対象外だけに置く。公開文書には作品名、レイヤー名、本文、UUID、ユーザーパスを記録しない。
 

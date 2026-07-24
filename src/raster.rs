@@ -204,6 +204,8 @@ pub enum PixelFormat {
     Rgba8,
     /// One eight-bit grayscale channel.
     Gray8,
+    /// Interleaved eight-bit grayscale value and alpha bytes.
+    GrayAlpha8,
 }
 
 impl PixelFormat {
@@ -211,14 +213,796 @@ impl PixelFormat {
         match self {
             Self::Rgba8 => 4,
             Self::Gray8 => 1,
+            Self::GrayAlpha8 => 2,
         }
     }
 }
 
-/// Whether decoded pixels had a corresponding external object.
+/// One row-major RGBA8 pixel.
+///
+/// The public fields make format-aware editing possible without indexing a
+/// raw byte chunk. Use [`Self::invert`] to invert color while preserving
+/// alpha.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Rgba8Pixel {
+    /// Red channel.
+    pub r: u8,
+    /// Green channel.
+    pub g: u8,
+    /// Blue channel.
+    pub b: u8,
+    /// Alpha channel.
+    pub a: u8,
+}
+
+impl Rgba8Pixel {
+    /// Minimum value of each channel.
+    pub const CHANNEL_MIN: u8 = u8::MIN;
+    /// Maximum value of each channel.
+    pub const CHANNEL_MAX: u8 = u8::MAX;
+    /// Pixel with every channel at its minimum.
+    pub const MIN: Self = Self {
+        r: Self::CHANNEL_MIN,
+        g: Self::CHANNEL_MIN,
+        b: Self::CHANNEL_MIN,
+        a: Self::CHANNEL_MIN,
+    };
+    /// Pixel with every channel at its maximum.
+    pub const MAX: Self = Self {
+        r: Self::CHANNEL_MAX,
+        g: Self::CHANNEL_MAX,
+        b: Self::CHANNEL_MAX,
+        a: Self::CHANNEL_MAX,
+    };
+
+    /// Inverts red, green, and blue while preserving alpha.
+    pub const fn invert(&mut self) {
+        self.r = Self::CHANNEL_MAX - self.r;
+        self.g = Self::CHANNEL_MAX - self.g;
+        self.b = Self::CHANNEL_MAX - self.b;
+    }
+
+    /// Inverts red, green, and blue while preserving alpha.
+    ///
+    /// This explicit alias is equivalent to [`Self::invert`].
+    pub const fn invert_rgb(&mut self) {
+        self.invert();
+    }
+
+    /// Adds one value to RGB, returning `None` if any channel would overflow.
+    #[must_use]
+    pub fn checked_add_rgb(self, value: u8) -> Option<Self> {
+        Some(Self {
+            r: self.r.checked_add(value)?,
+            g: self.g.checked_add(value)?,
+            b: self.b.checked_add(value)?,
+            a: self.a,
+        })
+    }
+
+    /// Subtracts one value from RGB, returning `None` if any channel would underflow.
+    #[must_use]
+    pub fn checked_sub_rgb(self, value: u8) -> Option<Self> {
+        Some(Self {
+            r: self.r.checked_sub(value)?,
+            g: self.g.checked_sub(value)?,
+            b: self.b.checked_sub(value)?,
+            a: self.a,
+        })
+    }
+
+    /// Adds one value to RGB and clamps every result to the channel range.
+    #[must_use]
+    pub const fn saturating_add_rgb(self, value: u8) -> Self {
+        Self {
+            r: self.r.saturating_add(value),
+            g: self.g.saturating_add(value),
+            b: self.b.saturating_add(value),
+            a: self.a,
+        }
+    }
+
+    /// Subtracts one value from RGB and clamps every result to the channel range.
+    #[must_use]
+    pub const fn saturating_sub_rgb(self, value: u8) -> Self {
+        Self {
+            r: self.r.saturating_sub(value),
+            g: self.g.saturating_sub(value),
+            b: self.b.saturating_sub(value),
+            a: self.a,
+        }
+    }
+}
+
+/// One row-major eight-bit grayscale pixel.
+///
+/// CLIP raster masks decoded as [`PixelFormat::Gray8`] contain one value
+/// channel and no independent alpha channel.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Gray8Pixel {
+    /// Grayscale value.
+    pub value: u8,
+}
+
+impl Gray8Pixel {
+    /// Minimum value of the grayscale channel.
+    pub const CHANNEL_MIN: u8 = u8::MIN;
+    /// Maximum value of the grayscale channel.
+    pub const CHANNEL_MAX: u8 = u8::MAX;
+    /// Pixel at the minimum value.
+    pub const MIN: Self = Self {
+        value: Self::CHANNEL_MIN,
+    };
+    /// Pixel at the maximum value.
+    pub const MAX: Self = Self {
+        value: Self::CHANNEL_MAX,
+    };
+
+    /// Inverts the grayscale value.
+    pub const fn invert(&mut self) {
+        self.value = Self::CHANNEL_MAX - self.value;
+    }
+
+    /// Adds a value, returning `None` if the channel would overflow.
+    #[must_use]
+    pub const fn checked_add(self, value: u8) -> Option<Self> {
+        match self.value.checked_add(value) {
+            Some(value) => Some(Self { value }),
+            None => None,
+        }
+    }
+
+    /// Subtracts a value, returning `None` if the channel would underflow.
+    #[must_use]
+    pub const fn checked_sub(self, value: u8) -> Option<Self> {
+        match self.value.checked_sub(value) {
+            Some(value) => Some(Self { value }),
+            None => None,
+        }
+    }
+
+    /// Adds a value and clamps the result to the channel range.
+    #[must_use]
+    pub const fn saturating_add(self, value: u8) -> Self {
+        Self {
+            value: self.value.saturating_add(value),
+        }
+    }
+
+    /// Subtracts a value and clamps the result to the channel range.
+    #[must_use]
+    pub const fn saturating_sub(self, value: u8) -> Self {
+        Self {
+            value: self.value.saturating_sub(value),
+        }
+    }
+}
+
+/// One row-major eight-bit grayscale pixel with independent alpha.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GrayAlpha8Pixel {
+    /// Grayscale value.
+    pub value: u8,
+    /// Alpha channel.
+    pub alpha: u8,
+}
+
+impl GrayAlpha8Pixel {
+    /// Minimum value of each channel.
+    pub const CHANNEL_MIN: u8 = u8::MIN;
+    /// Maximum value of each channel.
+    pub const CHANNEL_MAX: u8 = u8::MAX;
+    /// Pixel with both channels at their minimum.
+    pub const MIN: Self = Self {
+        value: Self::CHANNEL_MIN,
+        alpha: Self::CHANNEL_MIN,
+    };
+    /// Pixel with both channels at their maximum.
+    pub const MAX: Self = Self {
+        value: Self::CHANNEL_MAX,
+        alpha: Self::CHANNEL_MAX,
+    };
+
+    /// Inverts the grayscale value while preserving alpha.
+    pub const fn invert(&mut self) {
+        self.value = Self::CHANNEL_MAX - self.value;
+    }
+
+    /// Inverts the grayscale value while preserving alpha.
+    ///
+    /// This explicit alias is equivalent to [`Self::invert`].
+    pub const fn invert_value(&mut self) {
+        self.invert();
+    }
+
+    /// Adds to the grayscale value, returning `None` on overflow.
+    #[must_use]
+    pub const fn checked_add_value(self, value: u8) -> Option<Self> {
+        match self.value.checked_add(value) {
+            Some(value) => Some(Self {
+                value,
+                alpha: self.alpha,
+            }),
+            None => None,
+        }
+    }
+
+    /// Subtracts from the grayscale value, returning `None` on underflow.
+    #[must_use]
+    pub const fn checked_sub_value(self, value: u8) -> Option<Self> {
+        match self.value.checked_sub(value) {
+            Some(value) => Some(Self {
+                value,
+                alpha: self.alpha,
+            }),
+            None => None,
+        }
+    }
+
+    /// Adds to the grayscale value and clamps it to the channel range.
+    #[must_use]
+    pub const fn saturating_add_value(self, value: u8) -> Self {
+        Self {
+            value: self.value.saturating_add(value),
+            alpha: self.alpha,
+        }
+    }
+
+    /// Subtracts from the grayscale value and clamps it to the channel range.
+    #[must_use]
+    pub const fn saturating_sub_value(self, value: u8) -> Self {
+        Self {
+            value: self.value.saturating_sub(value),
+            alpha: self.alpha,
+        }
+    }
+}
+
+/// Immutable iterator over typed RGBA8 pixels.
+#[derive(Clone, Debug)]
+pub struct Rgba8Pixels<'a> {
+    chunks: std::slice::ChunksExact<'a, u8>,
+}
+
+impl Iterator for Rgba8Pixels<'_> {
+    type Item = Rgba8Pixel;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let bytes = self.chunks.next()?;
+        Some(Rgba8Pixel {
+            r: bytes[0],
+            g: bytes[1],
+            b: bytes[2],
+            a: bytes[3],
+        })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.chunks.size_hint()
+    }
+}
+
+impl DoubleEndedIterator for Rgba8Pixels<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let bytes = self.chunks.next_back()?;
+        Some(Rgba8Pixel {
+            r: bytes[0],
+            g: bytes[1],
+            b: bytes[2],
+            a: bytes[3],
+        })
+    }
+}
+
+impl ExactSizeIterator for Rgba8Pixels<'_> {}
+impl std::iter::FusedIterator for Rgba8Pixels<'_> {}
+
+/// Mutable proxy for one RGBA8 pixel.
+///
+/// Field edits are copied back to the image when this value is dropped. The
+/// proxy dereferences to [`Rgba8Pixel`], so fields can be edited directly:
+///
+/// ```
+/// use clipfile::{RasterImage, Rgba8Pixel};
+///
+/// # fn edit(image: &mut RasterImage) {
+/// if let Some(pixels) = image.rgba8_pixels_mut() {
+///     for mut pixel in pixels {
+///         pixel.r = Rgba8Pixel::CHANNEL_MAX - pixel.r;
+///     }
+/// }
+/// # }
+/// ```
+#[derive(Debug)]
+pub struct Rgba8PixelMut<'a> {
+    pixel: Rgba8Pixel,
+    bytes: &'a mut [u8],
+}
+
+impl std::ops::Deref for Rgba8PixelMut<'_> {
+    type Target = Rgba8Pixel;
+
+    fn deref(&self) -> &Self::Target {
+        &self.pixel
+    }
+}
+
+impl std::ops::DerefMut for Rgba8PixelMut<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.pixel
+    }
+}
+
+impl Drop for Rgba8PixelMut<'_> {
+    fn drop(&mut self) {
+        self.bytes
+            .copy_from_slice(&[self.pixel.r, self.pixel.g, self.pixel.b, self.pixel.a]);
+    }
+}
+
+/// Mutable iterator over typed RGBA8 pixels.
+#[derive(Debug)]
+pub struct Rgba8PixelsMut<'a> {
+    chunks: std::slice::ChunksExactMut<'a, u8>,
+}
+
+impl<'a> Iterator for Rgba8PixelsMut<'a> {
+    type Item = Rgba8PixelMut<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let bytes = self.chunks.next()?;
+        let pixel = Rgba8Pixel {
+            r: bytes[0],
+            g: bytes[1],
+            b: bytes[2],
+            a: bytes[3],
+        };
+        Some(Rgba8PixelMut { pixel, bytes })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.chunks.size_hint()
+    }
+}
+
+impl<'a> DoubleEndedIterator for Rgba8PixelsMut<'a> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let bytes = self.chunks.next_back()?;
+        let pixel = Rgba8Pixel {
+            r: bytes[0],
+            g: bytes[1],
+            b: bytes[2],
+            a: bytes[3],
+        };
+        Some(Rgba8PixelMut { pixel, bytes })
+    }
+}
+
+impl ExactSizeIterator for Rgba8PixelsMut<'_> {}
+impl std::iter::FusedIterator for Rgba8PixelsMut<'_> {}
+
+/// Immutable iterator over typed Gray8 pixels.
+#[derive(Clone, Debug)]
+pub struct Gray8Pixels<'a> {
+    values: std::slice::Iter<'a, u8>,
+}
+
+impl Iterator for Gray8Pixels<'_> {
+    type Item = Gray8Pixel;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.values.next().map(|&value| Gray8Pixel { value })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.values.size_hint()
+    }
+}
+
+impl DoubleEndedIterator for Gray8Pixels<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.values.next_back().map(|&value| Gray8Pixel { value })
+    }
+}
+
+impl ExactSizeIterator for Gray8Pixels<'_> {}
+impl std::iter::FusedIterator for Gray8Pixels<'_> {}
+
+/// Mutable proxy for one Gray8 pixel.
+///
+/// Field edits are copied back to the image when this value is dropped. The
+/// proxy dereferences to [`Gray8Pixel`].
+#[derive(Debug)]
+pub struct Gray8PixelMut<'a> {
+    pixel: Gray8Pixel,
+    value: &'a mut u8,
+}
+
+impl std::ops::Deref for Gray8PixelMut<'_> {
+    type Target = Gray8Pixel;
+
+    fn deref(&self) -> &Self::Target {
+        &self.pixel
+    }
+}
+
+impl std::ops::DerefMut for Gray8PixelMut<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.pixel
+    }
+}
+
+impl Drop for Gray8PixelMut<'_> {
+    fn drop(&mut self) {
+        *self.value = self.pixel.value;
+    }
+}
+
+/// Mutable iterator over typed Gray8 pixels.
+#[derive(Debug)]
+pub struct Gray8PixelsMut<'a> {
+    values: std::slice::IterMut<'a, u8>,
+}
+
+impl<'a> Iterator for Gray8PixelsMut<'a> {
+    type Item = Gray8PixelMut<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.values.next().map(|value| Gray8PixelMut {
+            pixel: Gray8Pixel { value: *value },
+            value,
+        })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.values.size_hint()
+    }
+}
+
+impl<'a> DoubleEndedIterator for Gray8PixelsMut<'a> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.values.next_back().map(|value| Gray8PixelMut {
+            pixel: Gray8Pixel { value: *value },
+            value,
+        })
+    }
+}
+
+impl ExactSizeIterator for Gray8PixelsMut<'_> {}
+impl std::iter::FusedIterator for Gray8PixelsMut<'_> {}
+
+/// Immutable iterator over typed GrayAlpha8 pixels.
+#[derive(Clone, Debug)]
+pub struct GrayAlpha8Pixels<'a> {
+    chunks: std::slice::ChunksExact<'a, u8>,
+}
+
+impl Iterator for GrayAlpha8Pixels<'_> {
+    type Item = GrayAlpha8Pixel;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let bytes = self.chunks.next()?;
+        Some(GrayAlpha8Pixel {
+            value: bytes[0],
+            alpha: bytes[1],
+        })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.chunks.size_hint()
+    }
+}
+
+impl DoubleEndedIterator for GrayAlpha8Pixels<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let bytes = self.chunks.next_back()?;
+        Some(GrayAlpha8Pixel {
+            value: bytes[0],
+            alpha: bytes[1],
+        })
+    }
+}
+
+impl ExactSizeIterator for GrayAlpha8Pixels<'_> {}
+impl std::iter::FusedIterator for GrayAlpha8Pixels<'_> {}
+
+/// Mutable proxy for one GrayAlpha8 pixel.
+///
+/// Field edits are copied back to the image when this value is dropped. The
+/// proxy dereferences to [`GrayAlpha8Pixel`].
+#[derive(Debug)]
+pub struct GrayAlpha8PixelMut<'a> {
+    pixel: GrayAlpha8Pixel,
+    bytes: &'a mut [u8],
+}
+
+impl std::ops::Deref for GrayAlpha8PixelMut<'_> {
+    type Target = GrayAlpha8Pixel;
+
+    fn deref(&self) -> &Self::Target {
+        &self.pixel
+    }
+}
+
+impl std::ops::DerefMut for GrayAlpha8PixelMut<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.pixel
+    }
+}
+
+impl Drop for GrayAlpha8PixelMut<'_> {
+    fn drop(&mut self) {
+        self.bytes
+            .copy_from_slice(&[self.pixel.value, self.pixel.alpha]);
+    }
+}
+
+/// Mutable iterator over typed GrayAlpha8 pixels.
+#[derive(Debug)]
+pub struct GrayAlpha8PixelsMut<'a> {
+    chunks: std::slice::ChunksExactMut<'a, u8>,
+}
+
+impl<'a> Iterator for GrayAlpha8PixelsMut<'a> {
+    type Item = GrayAlpha8PixelMut<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let bytes = self.chunks.next()?;
+        let pixel = GrayAlpha8Pixel {
+            value: bytes[0],
+            alpha: bytes[1],
+        };
+        Some(GrayAlpha8PixelMut { pixel, bytes })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.chunks.size_hint()
+    }
+}
+
+impl<'a> DoubleEndedIterator for GrayAlpha8PixelsMut<'a> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let bytes = self.chunks.next_back()?;
+        let pixel = GrayAlpha8Pixel {
+            value: bytes[0],
+            alpha: bytes[1],
+        };
+        Some(GrayAlpha8PixelMut { pixel, bytes })
+    }
+}
+
+impl ExactSizeIterator for GrayAlpha8PixelsMut<'_> {}
+impl std::iter::FusedIterator for GrayAlpha8PixelsMut<'_> {}
+
+/// One typed raster pixel from a format-independent iterator.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum RasterPixel {
+    /// RGBA8 pixel.
+    Rgba8(Rgba8Pixel),
+    /// Single-channel Gray8 pixel.
+    Gray8(Gray8Pixel),
+    /// GrayAlpha8 pixel.
+    GrayAlpha8(GrayAlpha8Pixel),
+}
+
+impl RasterPixel {
+    /// Pixel format represented by this value.
+    #[must_use]
+    pub const fn format(self) -> PixelFormat {
+        match self {
+            Self::Rgba8(_) => PixelFormat::Rgba8,
+            Self::Gray8(_) => PixelFormat::Gray8,
+            Self::GrayAlpha8(_) => PixelFormat::GrayAlpha8,
+        }
+    }
+}
+
+/// One mutable pixel proxy from a format-independent iterator.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum RasterPixelMut<'a> {
+    /// RGBA8 pixel.
+    Rgba8(Rgba8PixelMut<'a>),
+    /// Single-channel Gray8 pixel.
+    Gray8(Gray8PixelMut<'a>),
+    /// GrayAlpha8 pixel.
+    GrayAlpha8(GrayAlpha8PixelMut<'a>),
+}
+
+impl RasterPixelMut<'_> {
+    /// Pixel format represented by this proxy.
+    #[must_use]
+    pub const fn format(&self) -> PixelFormat {
+        match self {
+            Self::Rgba8(_) => PixelFormat::Rgba8,
+            Self::Gray8(_) => PixelFormat::Gray8,
+            Self::GrayAlpha8(_) => PixelFormat::GrayAlpha8,
+        }
+    }
+
+    /// Inverts color/value channels while preserving independent alpha.
+    pub fn invert(&mut self) {
+        match self {
+            Self::Rgba8(pixel) => pixel.invert(),
+            Self::Gray8(pixel) => pixel.invert(),
+            Self::GrayAlpha8(pixel) => pixel.invert(),
+        }
+    }
+
+    /// Adds to color/value channels if every result is representable.
+    ///
+    /// Returns `false` and leaves the pixel unchanged if any channel would
+    /// overflow. Independent alpha is always preserved.
+    pub fn checked_add_assign(&mut self, value: u8) -> bool {
+        match self {
+            Self::Rgba8(pixel) => {
+                let Some(next) = pixel.checked_add_rgb(value) else {
+                    return false;
+                };
+                **pixel = next;
+            }
+            Self::Gray8(pixel) => {
+                let Some(next) = pixel.checked_add(value) else {
+                    return false;
+                };
+                **pixel = next;
+            }
+            Self::GrayAlpha8(pixel) => {
+                let Some(next) = pixel.checked_add_value(value) else {
+                    return false;
+                };
+                **pixel = next;
+            }
+        }
+        true
+    }
+
+    /// Subtracts from color/value channels if every result is representable.
+    ///
+    /// Returns `false` and leaves the pixel unchanged if any channel would
+    /// underflow. Independent alpha is always preserved.
+    pub fn checked_sub_assign(&mut self, value: u8) -> bool {
+        match self {
+            Self::Rgba8(pixel) => {
+                let Some(next) = pixel.checked_sub_rgb(value) else {
+                    return false;
+                };
+                **pixel = next;
+            }
+            Self::Gray8(pixel) => {
+                let Some(next) = pixel.checked_sub(value) else {
+                    return false;
+                };
+                **pixel = next;
+            }
+            Self::GrayAlpha8(pixel) => {
+                let Some(next) = pixel.checked_sub_value(value) else {
+                    return false;
+                };
+                **pixel = next;
+            }
+        }
+        true
+    }
+
+    /// Adds to color/value channels and clamps every result to its range.
+    ///
+    /// Independent alpha is preserved.
+    pub fn saturating_add_assign(&mut self, value: u8) {
+        match self {
+            Self::Rgba8(pixel) => **pixel = pixel.saturating_add_rgb(value),
+            Self::Gray8(pixel) => **pixel = pixel.saturating_add(value),
+            Self::GrayAlpha8(pixel) => **pixel = pixel.saturating_add_value(value),
+        }
+    }
+
+    /// Subtracts from color/value channels and clamps every result to its range.
+    ///
+    /// Independent alpha is preserved.
+    pub fn saturating_sub_assign(&mut self, value: u8) {
+        match self {
+            Self::Rgba8(pixel) => **pixel = pixel.saturating_sub_rgb(value),
+            Self::Gray8(pixel) => **pixel = pixel.saturating_sub(value),
+            Self::GrayAlpha8(pixel) => **pixel = pixel.saturating_sub_value(value),
+        }
+    }
+}
+
+/// Format-independent immutable raster-pixel iterator.
+#[derive(Clone, Debug)]
+pub enum RasterPixels<'a> {
+    /// RGBA8 pixels.
+    Rgba8(Rgba8Pixels<'a>),
+    /// Single-channel Gray8 pixels.
+    Gray8(Gray8Pixels<'a>),
+    /// GrayAlpha8 pixels.
+    GrayAlpha8(GrayAlpha8Pixels<'a>),
+}
+
+impl Iterator for RasterPixels<'_> {
+    type Item = RasterPixel;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Rgba8(pixels) => pixels.next().map(RasterPixel::Rgba8),
+            Self::Gray8(pixels) => pixels.next().map(RasterPixel::Gray8),
+            Self::GrayAlpha8(pixels) => pixels.next().map(RasterPixel::GrayAlpha8),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            Self::Rgba8(pixels) => pixels.size_hint(),
+            Self::Gray8(pixels) => pixels.size_hint(),
+            Self::GrayAlpha8(pixels) => pixels.size_hint(),
+        }
+    }
+}
+
+impl DoubleEndedIterator for RasterPixels<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Rgba8(pixels) => pixels.next_back().map(RasterPixel::Rgba8),
+            Self::Gray8(pixels) => pixels.next_back().map(RasterPixel::Gray8),
+            Self::GrayAlpha8(pixels) => pixels.next_back().map(RasterPixel::GrayAlpha8),
+        }
+    }
+}
+
+impl ExactSizeIterator for RasterPixels<'_> {}
+impl std::iter::FusedIterator for RasterPixels<'_> {}
+
+/// Format-independent mutable raster-pixel iterator.
+#[derive(Debug)]
+pub enum RasterPixelsMut<'a> {
+    /// RGBA8 pixels.
+    Rgba8(Rgba8PixelsMut<'a>),
+    /// Single-channel Gray8 pixels.
+    Gray8(Gray8PixelsMut<'a>),
+    /// GrayAlpha8 pixels.
+    GrayAlpha8(GrayAlpha8PixelsMut<'a>),
+}
+
+impl<'a> Iterator for RasterPixelsMut<'a> {
+    type Item = RasterPixelMut<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Rgba8(pixels) => pixels.next().map(RasterPixelMut::Rgba8),
+            Self::Gray8(pixels) => pixels.next().map(RasterPixelMut::Gray8),
+            Self::GrayAlpha8(pixels) => pixels.next().map(RasterPixelMut::GrayAlpha8),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            Self::Rgba8(pixels) => pixels.size_hint(),
+            Self::Gray8(pixels) => pixels.size_hint(),
+            Self::GrayAlpha8(pixels) => pixels.size_hint(),
+        }
+    }
+}
+
+impl<'a> DoubleEndedIterator for RasterPixelsMut<'a> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Rgba8(pixels) => pixels.next_back().map(RasterPixelMut::Rgba8),
+            Self::Gray8(pixels) => pixels.next_back().map(RasterPixelMut::Gray8),
+            Self::GrayAlpha8(pixels) => pixels.next_back().map(RasterPixelMut::GrayAlpha8),
+        }
+    }
+}
+
+impl ExactSizeIterator for RasterPixelsMut<'_> {}
+impl std::iter::FusedIterator for RasterPixelsMut<'_> {}
+
+/// Origin and external-data resolution state of raster pixels.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum RasterDataState {
+    /// Pixels were constructed by the caller rather than decoded from a file.
+    Constructed,
     /// The offscreen row does not record a block-data identifier.
     MissingReference,
     /// An identifier is recorded but absent from `ExternalChunk`.
@@ -239,6 +1023,12 @@ impl RasterDataState {
     #[must_use]
     pub const fn is_present(self) -> bool {
         matches!(self, Self::Present)
+    }
+
+    /// Whether the pixels were constructed by the caller.
+    #[must_use]
+    pub const fn is_constructed(self) -> bool {
+        matches!(self, Self::Constructed)
     }
 }
 
@@ -287,6 +1077,43 @@ pub struct RasterImage {
 }
 
 impl RasterImage {
+    /// Constructs a validated row-major raster image.
+    ///
+    /// The byte length must equal `width * height * format bytes-per-pixel`.
+    /// Zero dimensions and arithmetic overflow are rejected.
+    pub fn from_pixels(
+        width: u32,
+        height: u32,
+        format: PixelFormat,
+        pixels: impl Into<Vec<u8>>,
+    ) -> Result<Self> {
+        if width == 0 || height == 0 {
+            return Err(Error::InvalidRaster {
+                reason: "constructed raster dimensions must be non-zero".to_owned(),
+            });
+        }
+        let expected = u64::from(width)
+            .checked_mul(u64::from(height))
+            .and_then(|count| count.checked_mul(format.bytes_per_pixel()))
+            .ok_or(Error::OffsetOverflow)?;
+        let pixels = pixels.into();
+        if pixels.len() as u64 != expected {
+            return Err(Error::InvalidRaster {
+                reason: format!(
+                    "constructed {format:?} raster has {} bytes, expected {expected}",
+                    pixels.len()
+                ),
+            });
+        }
+        Ok(Self {
+            width,
+            height,
+            format,
+            state: RasterDataState::Constructed,
+            pixels,
+        })
+    }
+
     /// Width in pixels.
     #[must_use]
     pub const fn width(&self) -> u32 {
@@ -315,6 +1142,204 @@ impl RasterImage {
     #[must_use]
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
+    }
+
+    /// Number of row-major pixel bytes.
+    #[must_use]
+    pub fn byte_len(&self) -> usize {
+        self.pixels.len()
+    }
+
+    /// Iterates over typed pixels without requiring a format-specific method.
+    ///
+    /// Match [`RasterPixel`] when format-specific channel fields are needed.
+    #[must_use]
+    pub fn pixel_iter(&self) -> RasterPixels<'_> {
+        match self.format {
+            PixelFormat::Rgba8 => RasterPixels::Rgba8(Rgba8Pixels {
+                chunks: self.pixels.chunks_exact(4),
+            }),
+            PixelFormat::Gray8 => RasterPixels::Gray8(Gray8Pixels {
+                values: self.pixels.iter(),
+            }),
+            PixelFormat::GrayAlpha8 => RasterPixels::GrayAlpha8(GrayAlpha8Pixels {
+                chunks: self.pixels.chunks_exact(2),
+            }),
+        }
+    }
+
+    /// Mutably iterates over typed pixels without format-specific branching.
+    ///
+    /// Common operations such as [`RasterPixelMut::invert`],
+    /// [`RasterPixelMut::checked_add_assign`], and
+    /// [`RasterPixelMut::saturating_sub_assign`] work uniformly for every
+    /// supported format while preserving independent alpha. Match
+    /// [`RasterPixelMut`] or use the format-specific iterators when direct
+    /// channel fields are needed.
+    pub fn pixel_iter_mut(&mut self) -> RasterPixelsMut<'_> {
+        match self.format {
+            PixelFormat::Rgba8 => RasterPixelsMut::Rgba8(Rgba8PixelsMut {
+                chunks: self.pixels.chunks_exact_mut(4),
+            }),
+            PixelFormat::Gray8 => RasterPixelsMut::Gray8(Gray8PixelsMut {
+                values: self.pixels.iter_mut(),
+            }),
+            PixelFormat::GrayAlpha8 => RasterPixelsMut::GrayAlpha8(GrayAlpha8PixelsMut {
+                chunks: self.pixels.chunks_exact_mut(2),
+            }),
+        }
+    }
+
+    /// Typed RGBA8 pixels, or `None` when this image has another format.
+    #[must_use]
+    pub fn rgba8_pixels(&self) -> Option<Rgba8Pixels<'_>> {
+        if self.format == PixelFormat::Rgba8 {
+            Some(Rgba8Pixels {
+                chunks: self.pixels.chunks_exact(4),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Typed mutable RGBA8 pixels, or `None` for another format.
+    ///
+    /// Each yielded proxy exposes `r`, `g`, `b`, and `a` fields and writes
+    /// field changes back before the next loop iteration.
+    pub fn rgba8_pixels_mut(&mut self) -> Option<Rgba8PixelsMut<'_>> {
+        if self.format == PixelFormat::Rgba8 {
+            Some(Rgba8PixelsMut {
+                chunks: self.pixels.chunks_exact_mut(4),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Typed Gray8 pixels, or `None` when this image has another format.
+    #[must_use]
+    pub fn gray8_pixels(&self) -> Option<Gray8Pixels<'_>> {
+        if self.format == PixelFormat::Gray8 {
+            Some(Gray8Pixels {
+                values: self.pixels.iter(),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Typed mutable Gray8 pixels, or `None` for another format.
+    ///
+    /// Gray8 has one `value` channel and no independent alpha channel.
+    pub fn gray8_pixels_mut(&mut self) -> Option<Gray8PixelsMut<'_>> {
+        if self.format == PixelFormat::Gray8 {
+            Some(Gray8PixelsMut {
+                values: self.pixels.iter_mut(),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Typed GrayAlpha8 pixels, or `None` when this image has another format.
+    #[must_use]
+    pub fn gray_alpha8_pixels(&self) -> Option<GrayAlpha8Pixels<'_>> {
+        if self.format == PixelFormat::GrayAlpha8 {
+            Some(GrayAlpha8Pixels {
+                chunks: self.pixels.chunks_exact(2),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Typed mutable GrayAlpha8 pixels, or `None` for another format.
+    ///
+    /// Each yielded proxy exposes independent `value` and `alpha` fields.
+    pub fn gray_alpha8_pixels_mut(&mut self) -> Option<GrayAlpha8PixelsMut<'_>> {
+        if self.format == PixelFormat::GrayAlpha8 {
+            Some(GrayAlpha8PixelsMut {
+                chunks: self.pixels.chunks_exact_mut(2),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Converts this raster to an image-rs dynamic image without copying pixels.
+    ///
+    /// This is available with the optional `image` feature. CLIP-specific
+    /// metadata such as [`Self::data_state`] is not represented by
+    /// [`image::DynamicImage`], so inspect it before consuming this value when
+    /// it matters to the caller.
+    #[cfg(feature = "image")]
+    #[must_use]
+    pub fn into_dynamic_image(self) -> image::DynamicImage {
+        let Self {
+            width,
+            height,
+            format,
+            pixels,
+            ..
+        } = self;
+        match format {
+            PixelFormat::Rgba8 => image::DynamicImage::ImageRgba8(
+                image::RgbaImage::from_raw(width, height, pixels)
+                    .expect("RasterImage maintains its RGBA8 buffer length invariant"),
+            ),
+            PixelFormat::Gray8 => image::DynamicImage::ImageLuma8(
+                image::GrayImage::from_raw(width, height, pixels)
+                    .expect("RasterImage maintains its Gray8 buffer length invariant"),
+            ),
+            PixelFormat::GrayAlpha8 => image::DynamicImage::ImageLumaA8(
+                image::GrayAlphaImage::from_raw(width, height, pixels)
+                    .expect("RasterImage maintains its GrayAlpha8 buffer length invariant"),
+            ),
+        }
+    }
+
+    /// Converts a supported image-rs dynamic image into a semantic raster.
+    ///
+    /// Eight-bit RGBA, grayscale, and grayscale-alpha buffers are moved
+    /// without copying. Eight-bit RGB is expanded with opaque alpha. Higher
+    /// bit depths and floating-point variants are rejected rather than
+    /// silently quantized.
+    #[cfg(feature = "image")]
+    pub fn try_from_dynamic_image(image: image::DynamicImage) -> Result<Self> {
+        match image {
+            image::DynamicImage::ImageRgba8(image) => Self::from_pixels(
+                image.width(),
+                image.height(),
+                PixelFormat::Rgba8,
+                image.into_raw(),
+            ),
+            image::DynamicImage::ImageRgb8(image) => {
+                let width = image.width();
+                let height = image.height();
+                Self::from_pixels(
+                    width,
+                    height,
+                    PixelFormat::Rgba8,
+                    image::DynamicImage::ImageRgb8(image).into_rgba8().into_raw(),
+                )
+            }
+            image::DynamicImage::ImageLuma8(image) => Self::from_pixels(
+                image.width(),
+                image.height(),
+                PixelFormat::Gray8,
+                image.into_raw(),
+            ),
+            image::DynamicImage::ImageLumaA8(image) => Self::from_pixels(
+                image.width(),
+                image.height(),
+                PixelFormat::GrayAlpha8,
+                image.into_raw(),
+            ),
+            _ => Err(Error::UnsupportedRaster {
+                reason: "image-rs conversion supports only 8-bit RGB(A), grayscale, and grayscale-alpha images"
+                    .to_owned(),
+            }),
+        }
     }
 
     /// Takes ownership of the row-major pixels.
@@ -501,6 +1526,22 @@ impl<'a> RasterEncoder<'a> {
                             usize::try_from(tile_pixel).map_err(|_| Error::OffsetOverflow)?;
                         output[target] = self.pixels[source];
                     }
+                    PixelFormat::GrayAlpha8 => {
+                        let source = usize::try_from(
+                            target_pixel.checked_mul(2).ok_or(Error::OffsetOverflow)?,
+                        )
+                        .map_err(|_| Error::OffsetOverflow)?;
+                        let alpha =
+                            usize::try_from(tile_pixel).map_err(|_| Error::OffsetOverflow)?;
+                        let value = usize::try_from(
+                            tile_area
+                                .checked_add(tile_pixel)
+                                .ok_or(Error::OffsetOverflow)?,
+                        )
+                        .map_err(|_| Error::OffsetOverflow)?;
+                        output[alpha] = self.pixels[source + 1];
+                        output[value] = self.pixels[source];
+                    }
                 }
             }
         }
@@ -510,6 +1551,30 @@ impl<'a> RasterEncoder<'a> {
 
 #[cfg(all(feature = "write", feature = "raster"))]
 impl<R: Read + Seek> ClipWriter<'_, R> {
+    /// Clones one plain raster layer from a complete semantic image.
+    ///
+    /// The image's pixel format is retained and the compatible checksum is
+    /// selected automatically. See [`Self::clone_raster_layer_from_template`]
+    /// for raw row-major interoperability.
+    pub fn clone_raster_layer_from_template_image(
+        &mut self,
+        template_layer_id: i64,
+        parent_layer_id: i64,
+        layer_name: impl AsRef<str>,
+        image: RasterImage,
+        limits: Limits,
+    ) -> Result<i64> {
+        let format = image.format();
+        self.clone_raster_layer_from_template(
+            template_layer_id,
+            parent_layer_id,
+            layer_name,
+            format,
+            image.into_pixels(),
+            limits,
+        )
+    }
+
     /// Clones one plain raster layer and replaces its base pixels.
     ///
     /// The template and destination parent must belong to the same canvas.
@@ -2109,6 +3174,7 @@ fn pixel_format(packing: PixelPacking) -> Result<PixelFormat> {
     match (alpha, buffer) {
         (1, 4) => Ok(PixelFormat::Rgba8),
         (1, 0) | (0, 1) => Ok(PixelFormat::Gray8),
+        (1, 1) => Ok(PixelFormat::GrayAlpha8),
         _ => Err(Error::UnsupportedRaster {
             reason: format!("unsupported channel packing ({alpha}, {buffer})"),
         }),
@@ -2199,6 +3265,20 @@ fn copy_tile(
                     let target =
                         usize::try_from(target_pixel).map_err(|_| Error::OffsetOverflow)?;
                     image.pixels[target] = byte_at(&tile.bytes, source_pixel)?;
+                }
+                PixelFormat::GrayAlpha8 => {
+                    let alpha = byte_at(&tile.bytes, source_pixel)?;
+                    let value = byte_at(
+                        &tile.bytes,
+                        tile_area
+                            .checked_add(source_pixel)
+                            .ok_or(Error::OffsetOverflow)?,
+                    )?;
+                    let target =
+                        usize::try_from(target_pixel.checked_mul(2).ok_or(Error::OffsetOverflow)?)
+                            .map_err(|_| Error::OffsetOverflow)?;
+                    image.pixels[target] = value;
+                    image.pixels[target + 1] = alpha;
                 }
             }
         }
@@ -2373,17 +3453,27 @@ mod tests {
     }
 
     fn attributes() -> Vec<u8> {
+        attributes_with_packing(1, 4, 5, 32, 8)
+    }
+
+    fn attributes_with_packing(
+        alpha_channels: u32,
+        buffer_channels: u32,
+        total_channels: u32,
+        buffer_bit_depth: u32,
+        alpha_bit_depth: u32,
+    ) -> Vec<u8> {
         let mut parameter = Vec::new();
         push_label(&mut parameter, "Parameter");
         for value in [300, 200, 2, 1] {
             push_u32(&mut parameter, value);
         }
         let mut packing = [0_u32; 16];
-        packing[1] = 1;
-        packing[2] = 4;
-        packing[3] = 5;
-        packing[6] = 32 << 5;
-        packing[8] = 8 << 5;
+        packing[1] = alpha_channels;
+        packing[2] = buffer_channels;
+        packing[3] = total_channels;
+        packing[6] = buffer_bit_depth << 5;
+        packing[8] = alpha_bit_depth << 5;
         packing[10] = 256;
         packing[11] = 256;
         for value in packing {
@@ -2619,6 +3709,16 @@ mod tests {
     }
 
     #[test]
+    fn recognizes_observed_eight_bit_gray_alpha_packing() {
+        let attributes =
+            OffscreenAttributes::parse(&attributes_with_packing(1, 1, 2, 8, 8)).unwrap();
+        assert_eq!(
+            pixel_format(attributes.packing()).unwrap(),
+            PixelFormat::GrayAlpha8
+        );
+    }
+
+    #[test]
     fn rejects_attribute_section_size_mismatch() {
         let mut bytes = attributes();
         bytes[7] = bytes[7].wrapping_add(1);
@@ -2643,12 +3743,240 @@ mod tests {
 
     #[test]
     fn classifies_raster_data_states() {
+        assert!(RasterDataState::Constructed.is_constructed());
         assert!(RasterDataState::MissingReference.is_default_filled());
         assert!(RasterDataState::MissingExternalChunk.is_default_filled());
+        assert!(!RasterDataState::Constructed.is_default_filled());
         assert!(!RasterDataState::Present.is_default_filled());
         assert!(!RasterDataState::MissingReference.is_present());
         assert!(!RasterDataState::MissingExternalChunk.is_present());
         assert!(RasterDataState::Present.is_present());
+    }
+
+    #[test]
+    fn constructs_raster_images_with_validated_dimensions() {
+        let image = RasterImage::from_pixels(2, 1, PixelFormat::GrayAlpha8, [1, 2, 3, 4]).unwrap();
+        assert_eq!(image.width(), 2);
+        assert_eq!(image.height(), 1);
+        assert_eq!(image.byte_len(), 4);
+        assert!(image.data_state().is_constructed());
+        assert!(matches!(
+            RasterImage::from_pixels(2, 1, PixelFormat::Rgba8, [0; 4]),
+            Err(Error::InvalidRaster { .. })
+        ));
+        assert!(matches!(
+            RasterImage::from_pixels(0, 1, PixelFormat::Gray8, []),
+            Err(Error::InvalidRaster { .. })
+        ));
+    }
+
+    #[test]
+    fn reads_and_edits_rgba8_pixels_by_named_channels() {
+        let mut image = RasterImage {
+            width: 2,
+            height: 1,
+            format: PixelFormat::Rgba8,
+            state: RasterDataState::Present,
+            pixels: vec![0, 10, 20, 30, 250, 240, 230, 220],
+        };
+
+        assert_eq!(
+            image.rgba8_pixels().unwrap().collect::<Vec<_>>(),
+            vec![
+                Rgba8Pixel {
+                    r: 0,
+                    g: 10,
+                    b: 20,
+                    a: 30,
+                },
+                Rgba8Pixel {
+                    r: 250,
+                    g: 240,
+                    b: 230,
+                    a: 220,
+                },
+            ]
+        );
+        assert!(image.gray8_pixels().is_none());
+        assert!(image.gray8_pixels_mut().is_none());
+
+        for mut pixel in image.rgba8_pixels_mut().unwrap() {
+            pixel.invert();
+        }
+        assert_eq!(image.pixels(), &[255, 245, 235, 30, 5, 15, 25, 220]);
+        assert_eq!(Rgba8Pixel::MIN.r, Rgba8Pixel::CHANNEL_MIN);
+        assert_eq!(Rgba8Pixel::MAX.a, Rgba8Pixel::CHANNEL_MAX);
+        let pixel = Rgba8Pixel {
+            r: 250,
+            g: 20,
+            b: 30,
+            a: 40,
+        };
+        assert!(pixel.checked_add_rgb(10).is_none());
+        assert!(pixel.checked_sub_rgb(21).is_none());
+        assert_eq!(
+            pixel.saturating_add_rgb(10),
+            Rgba8Pixel {
+                r: 255,
+                g: 30,
+                b: 40,
+                a: 40,
+            }
+        );
+        assert_eq!(
+            pixel.saturating_sub_rgb(25),
+            Rgba8Pixel {
+                r: 225,
+                g: 0,
+                b: 5,
+                a: 40,
+            }
+        );
+    }
+
+    #[test]
+    fn reads_and_edits_gray8_pixels_by_named_values() {
+        let mut image = RasterImage {
+            width: 3,
+            height: 1,
+            format: PixelFormat::Gray8,
+            state: RasterDataState::Present,
+            pixels: vec![0, 128, 255],
+        };
+
+        assert_eq!(
+            image.gray8_pixels().unwrap().collect::<Vec<_>>(),
+            vec![
+                Gray8Pixel { value: 0 },
+                Gray8Pixel { value: 128 },
+                Gray8Pixel { value: 255 },
+            ]
+        );
+        assert!(image.rgba8_pixels().is_none());
+        assert!(image.rgba8_pixels_mut().is_none());
+
+        for mut pixel in image.gray8_pixels_mut().unwrap() {
+            pixel.invert();
+        }
+        assert_eq!(image.pixels(), &[255, 127, 0]);
+        assert_eq!(Gray8Pixel::MIN.value, Gray8Pixel::CHANNEL_MIN);
+        assert_eq!(Gray8Pixel::MAX.value, Gray8Pixel::CHANNEL_MAX);
+        let pixel = Gray8Pixel { value: 250 };
+        assert!(pixel.checked_add(6).is_none());
+        assert_eq!(pixel.checked_sub(50), Some(Gray8Pixel { value: 200 }));
+        assert_eq!(pixel.saturating_add(10), Gray8Pixel::MAX);
+        assert_eq!(Gray8Pixel { value: 5 }.saturating_sub(10), Gray8Pixel::MIN);
+    }
+
+    #[test]
+    fn reads_and_edits_gray_alpha8_pixels_by_named_channels() {
+        let mut image = RasterImage {
+            width: 2,
+            height: 1,
+            format: PixelFormat::GrayAlpha8,
+            state: RasterDataState::Present,
+            pixels: vec![10, 20, 240, 230],
+        };
+
+        assert_eq!(
+            image.gray_alpha8_pixels().unwrap().collect::<Vec<_>>(),
+            vec![
+                GrayAlpha8Pixel {
+                    value: 10,
+                    alpha: 20,
+                },
+                GrayAlpha8Pixel {
+                    value: 240,
+                    alpha: 230,
+                },
+            ]
+        );
+        assert!(image.rgba8_pixels().is_none());
+        assert!(image.gray8_pixels().is_none());
+
+        for mut pixel in image.gray_alpha8_pixels_mut().unwrap() {
+            pixel.invert();
+        }
+        assert_eq!(image.pixels(), &[245, 20, 15, 230]);
+
+        let pixel = GrayAlpha8Pixel {
+            value: 250,
+            alpha: 42,
+        };
+        assert!(pixel.checked_add_value(10).is_none());
+        assert!(pixel.checked_sub_value(251).is_none());
+        assert_eq!(
+            pixel.saturating_add_value(10),
+            GrayAlpha8Pixel {
+                value: 255,
+                alpha: 42,
+            }
+        );
+        assert_eq!(
+            pixel.saturating_sub_value(251),
+            GrayAlpha8Pixel {
+                value: 0,
+                alpha: 42,
+            }
+        );
+    }
+
+    #[test]
+    fn common_pixel_iterators_cover_all_supported_formats() {
+        let mut rgba = RasterImage {
+            width: 1,
+            height: 1,
+            format: PixelFormat::Rgba8,
+            state: RasterDataState::Present,
+            pixels: vec![250, 20, 30, 40],
+        };
+        assert_eq!(
+            rgba.pixel_iter().collect::<Vec<_>>(),
+            vec![RasterPixel::Rgba8(Rgba8Pixel {
+                r: 250,
+                g: 20,
+                b: 30,
+                a: 40,
+            })]
+        );
+        {
+            let mut pixels = rgba.pixel_iter_mut();
+            assert_eq!(pixels.len(), 1);
+            let mut pixel = pixels.next().unwrap();
+            assert_eq!(pixel.format(), PixelFormat::Rgba8);
+            assert!(!pixel.checked_add_assign(10));
+            pixel.saturating_add_assign(10);
+        }
+        assert_eq!(rgba.pixels(), &[255, 30, 40, 40]);
+
+        let mut gray = RasterImage {
+            width: 1,
+            height: 1,
+            format: PixelFormat::Gray8,
+            state: RasterDataState::Present,
+            pixels: vec![5],
+        };
+        {
+            let mut pixel = gray.pixel_iter_mut().next().unwrap();
+            assert_eq!(pixel.format(), PixelFormat::Gray8);
+            assert!(!pixel.checked_sub_assign(10));
+            pixel.saturating_sub_assign(10);
+        }
+        assert_eq!(gray.pixels(), &[0]);
+
+        let mut gray_alpha = RasterImage {
+            width: 1,
+            height: 1,
+            format: PixelFormat::GrayAlpha8,
+            state: RasterDataState::Present,
+            pixels: vec![5, 42],
+        };
+        {
+            let mut pixel = gray_alpha.pixel_iter_mut().next().unwrap();
+            assert_eq!(pixel.format(), PixelFormat::GrayAlpha8);
+            pixel.invert();
+        }
+        assert_eq!(gray_alpha.pixels(), &[250, 42]);
     }
 
     #[cfg(all(feature = "write", feature = "raster"))]
@@ -2683,6 +4011,103 @@ mod tests {
         assert_eq!(&second[tile_area..tile_area + 4], &[7, 6, 5, 0]);
         assert_eq!(second[255], 0);
         assert_eq!(second[tile_area + 255 * 4], 0);
+    }
+
+    #[cfg(all(feature = "write", feature = "raster"))]
+    #[test]
+    fn encodes_gray_alpha_pixels_into_planar_native_tiles() {
+        let attributes =
+            OffscreenAttributes::parse(&attributes_with_packing(1, 1, 2, 8, 8)).unwrap();
+        let mut pixels = vec![0_u8; 300 * 200 * 2];
+        pixels[0..2].copy_from_slice(&[10, 20]);
+        let second_tile_pixel = (256 * 2) as usize;
+        pixels[second_tile_pixel..second_tile_pixel + 2].copy_from_slice(&[30, 40]);
+        let encoder = RasterEncoder::new(
+            &attributes,
+            PixelFormat::GrayAlpha8,
+            &pixels,
+            4096,
+            1024 * 1024,
+            1024 * 1024,
+        )
+        .unwrap();
+
+        let tile_area = 256 * 256;
+        let first = encoder
+            .encode_tile(0, Some(vec![0xAA; tile_area * 2]))
+            .unwrap();
+        assert_eq!(first[0], 20);
+        assert_eq!(first[tile_area], 10);
+        assert_eq!(first[tile_area - 1], 0xAA);
+
+        let second = encoder.encode_tile(1, None).unwrap();
+        assert_eq!(second[0], 40);
+        assert_eq!(second[tile_area], 30);
+        assert_eq!(second[255], 0);
+        assert_eq!(second[tile_area + 255], 0);
+    }
+
+    #[test]
+    fn decodes_planar_gray_alpha_tiles_into_interleaved_pixels() {
+        let attributes =
+            OffscreenAttributes::parse(&attributes_with_packing(1, 1, 2, 8, 8)).unwrap();
+        let tile_area = 256 * 256;
+        let mut bytes = vec![0_u8; tile_area * 2];
+        bytes[0] = 20;
+        bytes[tile_area] = 10;
+        let tile = DecodedTile {
+            index: 0,
+            parameters: BlockParameters::from_raw([0, 2, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0]),
+            bytes,
+        };
+        let mut image = RasterImage {
+            width: 300,
+            height: 200,
+            format: PixelFormat::GrayAlpha8,
+            state: RasterDataState::Present,
+            pixels: vec![0; 300 * 200 * 2],
+        };
+
+        copy_tile(&mut image, &attributes, &tile).unwrap();
+        assert_eq!(&image.pixels()[..2], &[10, 20]);
+    }
+
+    #[cfg(feature = "image")]
+    #[test]
+    fn converts_supported_rasters_to_image_rs_without_changing_bytes() {
+        for (format, pixels) in [
+            (PixelFormat::Rgba8, vec![1, 2, 3, 4]),
+            (PixelFormat::Gray8, vec![5]),
+            (PixelFormat::GrayAlpha8, vec![6, 7]),
+        ] {
+            let dynamic = RasterImage {
+                width: 1,
+                height: 1,
+                format,
+                state: RasterDataState::Present,
+                pixels: pixels.clone(),
+            }
+            .into_dynamic_image();
+            assert_eq!(dynamic.width(), 1);
+            assert_eq!(dynamic.height(), 1);
+            assert_eq!(dynamic.as_bytes(), pixels);
+        }
+
+        let rgb = image::DynamicImage::ImageRgb8(
+            image::RgbImage::from_raw(1, 1, vec![10, 20, 30]).unwrap(),
+        );
+        let raster = RasterImage::try_from_dynamic_image(rgb).unwrap();
+        assert_eq!(raster.format(), PixelFormat::Rgba8);
+        assert_eq!(raster.pixels(), &[10, 20, 30, 255]);
+        assert!(raster.data_state().is_constructed());
+
+        let unsupported = image::DynamicImage::ImageRgba16(
+            image::ImageBuffer::<image::Rgba<u16>, Vec<u16>>::from_raw(1, 1, vec![0; 4]).unwrap(),
+        );
+        assert!(matches!(
+            RasterImage::try_from_dynamic_image(unsupported),
+            Err(Error::UnsupportedRaster { .. })
+        ));
     }
 
     #[cfg(feature = "write")]

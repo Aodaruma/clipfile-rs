@@ -27,43 +27,29 @@ fn main() -> ExitCode {
 }
 
 fn inspect(path: impl AsRef<std::path::Path>) -> clipfile::Result<()> {
-    // Ruler ownership and special-ruler tables live in the embedded database.
+    // Open the typed document database; its schema details stay inside clipfile.
     let mut clip = ClipFile::open(File::open(path)?)?;
     let database = clip.open_database()?;
-    if !database.schema().has_column("Layer", "RulerRange") {
-        println!("ruler layers: 0");
-        return Ok(());
-    }
 
-    // Discover candidate layer IDs before asking for their typed ruler data.
-    let mut statement = database
-        .connection()
-        .prepare("SELECT MainId FROM Layer WHERE RulerRange IS NOT NULL ORDER BY MainId")?;
-    let layer_ids = statement
-        .query_map([], |row| row.get::<_, i64>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    drop(statement);
-
-    // ruler_layer validates manager chains, curve records, and perspective links.
-    println!("ruler layers: {}", layer_ids.len());
-    for layer_id in layer_ids {
-        if let Some(layer) = database.ruler_layer(layer_id, Limits::default())? {
-            // RulerKind gives callers a stable summary without matching every variant.
-            let kinds = layer
-                .rulers()
-                .iter()
-                .map(|ruler| format!("{:?}", ruler.kind()))
-                .collect::<Vec<_>>()
-                .join(",");
-            println!(
-                "layer={}\tvector={:?}\tmanager={:?}\trulers={}\tkinds={}",
-                layer.layer_id(),
-                layer.vector_object_id(),
-                layer.manager_id(),
-                layer.rulers().len(),
-                kinds
-            );
-        }
+    // Discover and validate vector/special rulers without writing SQL.
+    let layers = database.ruler_layers(Limits::default())?;
+    println!("ruler layers: {}", layers.len());
+    for layer in layers {
+        // RulerKind gives callers a stable summary without matching every variant.
+        let kinds = layer
+            .rulers()
+            .iter()
+            .map(|ruler| format!("{:?}", ruler.kind()))
+            .collect::<Vec<_>>()
+            .join(",");
+        println!(
+            "layer={}\tvector={:?}\tmanager={:?}\trulers={}\tkinds={}",
+            layer.layer_id(),
+            layer.vector_object_id(),
+            layer.manager_id(),
+            layer.rulers().len(),
+            kinds
+        );
     }
     Ok(())
 }

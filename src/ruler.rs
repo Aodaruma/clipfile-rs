@@ -395,6 +395,69 @@ impl RulerLayerData {
 }
 
 impl Database {
+    /// Discovers and validates every layer that owns ruler data.
+    ///
+    /// Schema differences and the underlying `Layer` query are handled
+    /// internally. The result is ordered by layer ID and includes vector,
+    /// special-ruler-manager, and ruler-range ownership.
+    pub fn ruler_layers(&self, limits: Limits) -> Result<Vec<RulerLayerData>> {
+        if self.schema().table("Layer").is_none() {
+            return Ok(Vec::new());
+        }
+        self.require_column("Layer", "MainId")?;
+
+        let mut predicates = Vec::new();
+        if self.schema().has_column("Layer", "RulerVectorIndex") {
+            predicates.push("COALESCE(RulerVectorIndex, 0) <> 0");
+        }
+        if self.schema().has_column("Layer", "SpecialRulerManager") {
+            predicates.push("COALESCE(SpecialRulerManager, 0) <> 0");
+        }
+        if self.schema().has_column("Layer", "RulerRange") {
+            predicates.push("RulerRange IS NOT NULL");
+        }
+        if predicates.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let sql = format!(
+            "SELECT MainId FROM Layer WHERE {} ORDER BY MainId",
+            predicates.join(" OR ")
+        );
+        let mut statement = self.connection().prepare(&sql)?;
+        let mut rows = statement.query([])?;
+        let mut layer_ids = Vec::new();
+        while let Some(row) = rows.next()? {
+            let layer_id: i64 = row.get(0)?;
+            if layer_ids.last() == Some(&layer_id) {
+                return Err(ruler_error(format!(
+                    "ruler layer MainId {layer_id} is not unique"
+                )));
+            }
+            if layer_ids.len() as u64 >= limits.max_layers() {
+                return Err(Error::LimitExceeded {
+                    resource: "ruler layers",
+                    value: layer_ids.len() as u64 + 1,
+                    limit: limits.max_layers(),
+                });
+            }
+            layer_ids.push(layer_id);
+        }
+        drop(rows);
+        drop(statement);
+
+        let mut layers = Vec::with_capacity(layer_ids.len());
+        for layer_id in layer_ids {
+            let layer = self.ruler_layer(layer_id, limits)?.ok_or_else(|| {
+                ruler_error(format!(
+                    "layer {layer_id} was selected as a ruler owner but has no ruler data"
+                ))
+            })?;
+            layers.push(layer);
+        }
+        Ok(layers)
+    }
+
     /// Reads and validates all ruler references owned by one layer.
     ///
     /// An unknown layer or a layer without ruler columns/references returns
@@ -1159,6 +1222,61 @@ mod tests {
                 ..
             } if center == RulerPoint { x: 2.0, y: 3.0 }
         ));
+    }
+
+    #[test]
+    fn discovers_ruler_layers_without_exposing_sql() {
+        let connection = base_database();
+        connection
+            .execute("INSERT INTO Layer VALUES (3, 2, NULL, NULL, NULL)", [])
+            .unwrap();
+        connection
+            .execute("INSERT INTO Layer VALUES (1, 2, 4, NULL, 1)", [])
+            .unwrap();
+        connection
+            .execute("INSERT INTO VectorObjectList VALUES (4, 2, 1, X'00')", [])
+            .unwrap();
+        connection
+            .execute("INSERT INTO Layer VALUES (2, 2, NULL, 7, NULL)", [])
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO SpecialRulerManager VALUES (
+                    7, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                 )",
+                [],
+            )
+            .unwrap();
+        let database = Database::from_connection(connection).unwrap();
+
+        let layers = database.ruler_layers(Limits::default()).unwrap();
+        assert_eq!(
+            layers
+                .iter()
+                .map(RulerLayerData::layer_id)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert_eq!(layers[0].vector_object_id(), Some(4));
+        assert_eq!(layers[1].manager_id(), Some(7));
+        assert!(matches!(
+            database.ruler_layers(Limits::default().with_max_layers(1)),
+            Err(Error::LimitExceeded {
+                resource: "ruler layers",
+                value: 2,
+                limit: 1,
+            })
+        ));
+    }
+
+    #[test]
+    fn ruler_layer_discovery_tolerates_absent_optional_schema() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("CREATE TABLE Layer (MainId INTEGER, CanvasId INTEGER)")
+            .unwrap();
+        let database = Database::from_connection(connection).unwrap();
+        assert!(database.ruler_layers(Limits::default()).unwrap().is_empty());
     }
 
     #[test]

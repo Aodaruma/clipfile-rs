@@ -1,15 +1,15 @@
 # `.clip` の書き込み
 
-`write` featureは、既存の`.clip`を検証してから別の新規ファイルへ再構築する低レベルAPIを提供する。既定featureには含まれない。
+`write` featureは、既存の`.clip`を検証してから別の新規ファイルへ再構築するAPIを提供する。既定featureには含まれない。意味が確認済みの領域には型付きoperationを用意し、未知列の調査や高度な相互運用向けには低レベルescape hatchも残す。
 
 ```toml
 [dependencies]
-clipfile = { version = "0.5", features = ["write"] }
+clipfile = { version = "1.0", features = ["write"] }
 ```
 
-## 基本API
+## Writerの生成と低レベルescape hatch
 
-`ClipFile::writer()` は入力をstrict validationし、埋め込みSQLiteをprivateな書き込み可能メモリDBへ複製する。入力ファイル自体は変更しない。
+`ClipFile::writer()` は入力をstrict validationし、埋め込みSQLiteをprivateな書き込み可能メモリDBへ複製する。入力ファイル自体は変更しない。次のSQL例は、型付きoperationがまだ存在しない未知・高度な用途向けのescape hatchである。raster、text、vector、animationなど既知の意味データには、後述の型付きAPIを優先する。
 
 ```rust,no_run
 use std::fs::File;
@@ -108,22 +108,22 @@ cargo run --features "write,raster" --example invert_first_tile -- input.clip ne
 
 ### Plain raster layerのtemplate clone
 
-`clone_raster_layer_from_template` は、同じcanvasにある検証済みのplain leaf raster layerをtemplateにし、完全なRGBA8/Gray8 pixel列から新しいlayerを親layerの先頭へ追加する。`LayerType = 1`、layer maskなし、1本のrender mipmap chainとrender thumbnailを持つtemplateだけを受理する。
+`clone_raster_layer_from_template_image` は、同じcanvasにある検証済みのplain leaf raster layerをtemplateにし、検証済みの `RasterImage` から新しいlayerを親layerの先頭へ追加する。`LayerType = 1`、layer maskなし、1本のrender mipmap chainとrender thumbnailを持つtemplateだけを受理する。`RasterImage::from_pixels` は寸法・formatに対するbyte数を検証し、`image` featureの `try_from_dynamic_image` は対応する8-bit image-rs bufferを変換する。
 
 `Layer`、`Mipmap`、`MipmapInfo`、`Offscreen`、`LayerThumbnail`の未知列はtemplateからstorage classごと保持する。一方でrow identity、意味上のID、layer UUID、所有参照、tree link、外部IDは再生成する。100% base renderだけをCSP互換チェックサム付きBlockDataとして追加する。派生mipmapとthumbnail atlasには新しい未索引IDを設定し、templateの古いcacheを参照させない。canvas previewは再生成しない。
 
 ```rust,no_run
 # use std::fs::File;
-use clipfile::{ClipFile, Limits, PixelFormat};
+use clipfile::{ClipFile, Limits, PixelFormat, RasterImage};
 # let mut clip = ClipFile::open(File::open("input.clip")?)?;
 # let rgba_pixels = vec![0_u8; 256 * 256 * 4];
+let image = RasterImage::from_pixels(256, 256, PixelFormat::Rgba8, rgba_pixels)?;
 let mut writer = clip.writer()?;
-let layer_id = writer.clone_raster_layer_from_template(
+let layer_id = writer.clone_raster_layer_from_template_image(
     42,
     1,
     "New raster",
-    PixelFormat::Rgba8,
-    rgba_pixels,
+    image,
     Limits::default(),
 )?;
 println!("new layer: {layer_id}");
@@ -132,6 +132,8 @@ writer.write_to_path("new-output.clip")?;
 ```
 
 template画像を復号し、異なるpixel列を与える実行例は `examples/clone_raster_layer.rs` にある。
+
+既存render rasterまたはlayer maskの全画素置換には、`replace_layer_raster` / `replace_layer_mask` へ `RasterImage` を渡す。これらはpixel formatとCSP互換checksumを自動選択する。`clone_raster_layer_from_template`、`replace_layer_raster_pixels`、`replace_layer_mask_pixels` は、raw row-major byteやchecksum modeを明示する相互運用・形式調査用として残す。
 
 ## Text
 
@@ -242,7 +244,7 @@ writer.write_to_path("new-output.clip")?;
 
 - `replace_animation_track_value`: `TrackValueMap`の既知型を、同じ型の有限値へ置換する。
 - `replace_animation_curve_keyframe_numeric`: 既存primary FCurveの時刻・値を置換し、同名・同軸のsecondary FCurveがあれば同期する。
-- `insert_animation_curve_keyframe`: 既存curveに存在する全per-key配列を、呼出側が指定した完全field値で同期延長する。
+- `insert_animation_curve_keyframe`: 既存curveに存在する全per-key配列を同期延長する。通常は `AnimationCurveKeyframeInsert::from_template` で既存keyのoptional fieldを安全に引き継ぐ。
 - `remove_animation_curve_keyframe`: primaryと対応secondaryの全per-key配列から同じkeyを削除する。最後のkeyは拒否する。
 - `replace_animation_cel_tag`: 既存`ImageCelName` keyのTagをprimary/secondaryで同期し、現在値が同じ旧Tagを指す場合は`TrackValueMap`も同期する。
 - `clone_animation_track_from_template`: 既存Trackの全非identity列とmixer本体を複製し、未追跡layerへ割り当ててtimeline末尾へ連結する。
@@ -251,7 +253,7 @@ writer.write_to_path("new-output.clip")?;
 
 新規external objectの索引行は、既存の`ExternalChunk.ExternalID`が使うSQLite storage class（`TEXT`または`BLOB`）を保持する。CLIP STUDIO PAINTが生成した通常のファイルでは`TEXT`であり、異なる型で追加するとcontainerとSQLite自体が妥当でもアプリが読込を拒否するためである。Track複製時は`ElemScheme`が存在する場合、Track用`MaxIndex`も同じtransaction内で更新する。
 
-curve keyの追加・削除では、既存BINC object metadataと未知fieldをそのまま保持する。存在するoptional per-key arrayはすべて値を指定して同期する必要があり、未対応fieldを持つcurveは変更前に拒否する。Tag追加等で展開後BINC長が変わる場合は、存在する`TrackActionMixerSize` / `TrackActionMixer2Size`も更新する。既存size列が外部本体と一致しない入力も変更前に拒否する。
+curve keyの追加・削除では、既存BINC object metadataと未知fieldをそのまま保持する。存在するoptional per-key arrayはすべて同期する必要があるが、`AnimationCurveKeyframeInsert::from_template` は既存keyから必要な値をライブラリ内でコピーする。未対応fieldを持つcurveは変更前に拒否する。Tag追加等で展開後BINC長が変わる場合は、存在する`TrackActionMixerSize` / `TrackActionMixer2Size`も更新する。既存size列が外部本体と一致しない入力も変更前に拒否する。
 
 Track cloneは任意曲線を生成するbuilderではない。`_PW_ID`はSQLiteに再採番させ、`MainId`はTrack表と、存在する場合は`ElemScheme`のTrack用`MaxIndex`の大きい方から次を割り当てる。`TrackUuid`は衝突検査済みUUID v4を生成する。primary/secondary mixerは別々の新規 `extrnlid` UUID v4へ同じ完全bodyを複製し、展開後BINC長とsize列を事前照合する。その他の未知列はSQLiteの`INSERT ... SELECT`でstorage classごと保持する。
 
@@ -289,7 +291,7 @@ writer.write_to_path("new-output.clip")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-image-cel専用cloneも任意のmixerをゼロから作るbuilderではない。完全なkind `2000` templateを必要とし、curve metadataと非対象BINC graphはclone元を保持する。指定するkey列は非空、時刻は有限かつ昇順、tagは空でない必要がある。
+image-cel専用cloneも任意のmixerをゼロから作るbuilderではない。完全なkind `2000` templateを必要とし、curve metadataと非対象BINC graphはclone元を保持する。`ImageCelTrackCloneOptions::from_timed_cels` へ時刻とcel tagを渡すと、同一tagに同じ内部numeric valueを割り当てる。指定するkey列は非空、時刻は有限かつ昇順、tagは空でない必要がある。内部numeric valueを既に管理している相互運用用途だけ、`ImageCelTrackCloneOptions::new` と `ImageCelTrackKeyframe` を直接使う。
 
 Track削除はheadまたはpredecessorのlinkをtransaction内で修復する。外部mixerは他の不透明参照がないことを証明できないため、`ExternalChunk`とcontainerにorphanとして残す。`ElemScheme.MaxIndex`も安全なhigh-water markのまま減らさない。
 

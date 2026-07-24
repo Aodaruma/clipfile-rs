@@ -7,10 +7,28 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-## [1.0.0-rc.1] - 2026-07-24
+## [1.0.0] - 2026-07-25
 
 ### Added
 
+- Format-independent and format-specific immutable/mutable
+  RGBA8/Gray8/GrayAlpha8 pixel iterators with named channels, channel bounds,
+  common inversion, and explicit checked or saturating arithmetic helpers.
+- Validated GrayAlpha8 raster decoding and writing for the observed planar
+  alpha/value tile layout.
+- Optional zero-copy consuming conversion from `RasterImage` to image-rs
+  `DynamicImage`, plus checked conversion back from supported 8-bit image-rs
+  buffers, without making image-rs a default dependency.
+- High-level ruler-layer discovery that hides schema probing and SQL while
+  validating every returned layer.
+- High-level correction-layer discovery and SQL-free raster discovery in
+  examples.
+- Semantic raster replacement helpers that retain the image format and select
+  CSP-compatible checksums automatically.
+- Animation helpers for explicit timeline loading, template-complete key
+  insertion, internal image-cel value assignment, and known track-kind names.
+- A public API-level audit documenting typed semantic entry points and the
+  intentional forward-compatibility escape hatches.
 - Template-based plain raster-layer cloning with regenerated row identities,
   layer UUID, external IDs, tree links, CSP-compatible base pixels, and fresh
   non-stale derived-cache references.
@@ -29,6 +47,11 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Document render-cache boundaries explicitly: raster clones invalidate
   derived references, while vector edits and canvas previews are not
   regenerated automatically.
+
+### Fixed
+
+- Enable all crate features for rust-analyzer in VS Code so feature-gated
+  examples receive complete type analysis and inlay hints.
 
 ## [0.5.0] - 2026-07-24
 
@@ -152,8 +175,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Optional offscreen metadata parsing, bounded zlib tile decoding, and raster assembly.
 - Project, canvas, layer, and cycle-checked layer-tree models.
 
-[Unreleased]: https://github.com/Aodaruma/clipfile-rs/compare/v1.0.0-rc.1...HEAD
-[1.0.0-rc.1]: https://github.com/Aodaruma/clipfile-rs/compare/v0.5.0...v1.0.0-rc.1
+[Unreleased]: https://github.com/Aodaruma/clipfile-rs/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/Aodaruma/clipfile-rs/compare/v0.5.0...v1.0.0
 [0.5.0]: https://github.com/Aodaruma/clipfile-rs/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Aodaruma/clipfile-rs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Aodaruma/clipfile-rs/compare/v0.2.0...v0.3.0

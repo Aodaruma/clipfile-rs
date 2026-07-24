@@ -40,8 +40,8 @@ Implemented:
   and axis-qualified position/center curves; and
 - optional validated time-lapse manager/record/blob chains with bounded reads
   and streaming decompression, plus streaming internal WebP frame indexing; and
-- optional `Offscreen.Attribute`, zlib tile, and RGBA/grayscale raster decoding;
-  and
+- optional `Offscreen.Attribute`, zlib tile, and RGBA/grayscale/gray-alpha
+  raster decoding, with opt-in image-rs conversion; and
 - opt-in validated container rewriting with editable SQLite metadata,
   byte-preserving external bodies, repaired absolute offsets, CSP-compatible
   block checksums, plain-raster-layer template cloning, text-object lifecycle,
@@ -66,16 +66,17 @@ The container parser has no default dependencies:
 
 ```toml
 [dependencies]
-clipfile = "0.5"
+clipfile = "1.0"
 ```
 
 Enable `sqlite` for document metadata, `raster` for SQLite and raster decoding,
 `animation` for timeline curves, `timelapse` for time-lapse metadata and
-payload access, or `write` for validated low-level rewriting:
+payload access, `image` for zero-copy consuming conversion to image-rs, or
+`write` for conservative validated rewriting:
 
 ```toml
 [dependencies]
-clipfile = { version = "0.5", features = ["raster", "animation", "timelapse"] }
+clipfile = { version = "1.0", features = ["raster", "animation", "timelapse"] }
 ```
 
 ## Example
@@ -149,12 +150,14 @@ with its original opaque attribute record. Length-prefixed extra-object arrays,
 total bytes, and object counts are bounded; font, paragraph, and transform
 attributes are not interpreted yet.
 
-`Database::correction_layer` validates the big-endian `FilterLayerInfo`
-section and decodes the nine observed correction kinds: brightness/contrast,
-levels, tone curves, hue/saturation/luminosity, color balance, reverse
-gradient, posterization, threshold, and gradient map. Raw fixed-point words
-and the complete source payload remain available, and future kind values use
-an opaque bounded fallback.
+`Database::correction_layers` discovers every correction layer without
+requiring schema checks or SQL; `correction_layer` reads one known layer.
+Both validate the big-endian `FilterLayerInfo` section and decode the nine
+observed correction kinds: brightness/contrast, levels, tone curves,
+hue/saturation/luminosity, color balance, reverse gradient, posterization,
+threshold, and gradient map. Raw fixed-point words and the complete source
+payload remain available, and future kind values use an opaque bounded
+fallback.
 
 The `animation` feature reads validated timeline ranges and resolves tracks to
 their layer UUIDs. It validates the complete `FirstTrack` / `TrackNextIndex`
@@ -168,8 +171,10 @@ inline `TrackValueMap` and exposes observed floating-point and indexed-text
 values while preserving future value types as opaque payloads. Secondary
 `0110binc` value records are sparse, use independently validated field
 metadata, and preserve their `Double[]` frame, value, and slope arrays as
-`f64`. Verified raw-kind helpers cover non-cel folders, image-cel folders,
-static-image layers, paper, play-time control, and audio control.
+`f64`. Verified raw-kind helpers and names cover non-cel folders, image-cel
+folders, static-image layers, paper, 2D cameras, play-time control, and audio
+control. `read_animation_for_timeline` selects an explicit timeline when the
+preferred timeline is not the intended one.
 
 Verified 2D-camera tracks use raw kind `2005`. `ImageCenter` and
 `ImagePosition` current values are exposed as two-dimensional values, while
@@ -200,16 +205,27 @@ wall-clock timestamp, so the API does not invent real-time playback metadata.
 The `raster` feature builds on `sqlite`. It resolves a layer render, layer
 mask, or mipmap to its base offscreen data, supports bounded tile-by-tile
 decompression, and can assemble currently understood 8-bit `(alpha, BGRA)`
-or grayscale layouts.
-Unknown and bit-packed layouts return an explicit unsupported-format error.
+or grayscale layouts, including independent grayscale alpha. `pixel_iter` and
+`pixel_iter_mut` provide format-independent typed iteration, while
+format-specific iterators expose RGBA, grayscale, and gray-alpha fields without
+raw byte indexing. Common inversion and arithmetic use explicit `invert`,
+`checked_*`, or `saturating_*` helpers; `Add`/`Sub` are intentionally not given
+an ambiguous overflow or alpha policy.
+`RasterImage::from_pixels` validates caller-provided row-major data. The
+optional `image` feature adds zero-copy `RasterImage::into_dynamic_image` and
+the checked reverse conversion `try_from_dynamic_image`, while the default
+return type retains CLIP-specific state. Unknown, higher-bit-depth, and
+bit-packed layouts return an explicit unsupported-format error rather than
+being silently quantized.
 
 The opt-in `write` feature provides `ClipFile::writer`. It clones the embedded
 SQLite database into writable memory, preserves unchanged external bodies,
 repairs `ExternalChunk.Offset` and the `CHNKHead` database offset, and can
 replace a complete opaque external body. Existing block data can be
 zlib-reencoded with CSP-compatible Adler-32 checksums. With the corresponding
-features enabled, higher-level methods replace an existing raster or layer
-mask and clone a plain raster layer from a compatible template. Text objects
+features enabled, `replace_layer_raster` and `replace_layer_mask` infer the
+format and checksum policy from `RasterImage`; a plain raster layer can also
+be cloned from a compatible template. Text objects
 can be edited, template-cloned, and removed while preserving encoded
 boundaries and paired attributes. A validated vector layout supports
 translation, stroke-template cloning, and stroke removal. Existing animation
@@ -224,8 +240,10 @@ document generator. Unknown top-level chunk layouts are rejected. Complete
 style/brush synthesis, derived raster-cache generation, and template-free
 animation-track creation are not implemented. See
 [the writing guide](docs/writing.md) for the precise API boundaries and current
-guarantees. [The 1.0 readiness checklist](docs/one-zero-readiness.md) records
-the stable scope, release gates, and intentionally deferred work.
+guarantees. [The public API-level audit](docs/api-level-audit.md) distinguishes
+normal typed APIs from intentional format-research escape hatches.
+[The 1.0 readiness checklist](docs/one-zero-readiness.md) records the stable
+scope, release gates, and intentionally deferred work.
 
 Treat all input as untrusted; the parser and writer validate structural bounds,
 but coverage of the full format is still incomplete.

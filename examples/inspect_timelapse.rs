@@ -4,18 +4,6 @@ use std::{env, fs::File};
 
 use clipfile::{ClipFile, Limits};
 
-fn fourcc(raw: [u8; 4]) -> String {
-    raw.into_iter()
-        .map(|byte| {
-            if byte.is_ascii_graphic() {
-                char::from(byte)
-            } else {
-                '.'
-            }
-        })
-        .collect()
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Time-lapse data is optional, so a valid file may report `none`.
     let mut arguments = env::args_os().skip(1);
@@ -61,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!(
                     "    frame {}: kind={}, dimensions={:?}, delta origin={:?}, encoded bytes={}",
                     frame.sequence(),
-                    fourcc(frame.kind().raw()),
+                    frame.kind().known_name().unwrap_or("unknown"),
                     frame.webp_dimensions(),
                     frame.delta_origin(),
                     frame.encoded_size()

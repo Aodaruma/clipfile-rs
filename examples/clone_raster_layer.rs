@@ -5,7 +5,7 @@
 
 use std::{env, fs::File};
 
-use clipfile::{ClipFile, Limits, PixelFormat};
+use clipfile::{ClipFile, Limits, RasterImage};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Select a compatible leaf template, its destination parent, and a name.
@@ -27,36 +27,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source = database
         .layer_raster_source(template_layer_id)?
         .ok_or("the template layer has no render raster")?;
-    let image = clip.decode_raster(&database, &source)?;
-    let format = image.format();
-    let mut pixels = image.into_pixels();
+    let mut raster: RasterImage = clip.decode_raster(&database, &source)?;
     drop(database);
 
-    // Prepare visibly different pixels without changing the alpha channel.
-    match format {
-        PixelFormat::Rgba8 => {
-            for pixel in pixels.chunks_exact_mut(4) {
-                pixel[0] = u8::MAX - pixel[0];
-                pixel[1] = u8::MAX - pixel[1];
-                pixel[2] = u8::MAX - pixel[2];
-            }
-        }
-        PixelFormat::Gray8 => {
-            for value in &mut pixels {
-                *value = u8::MAX - *value;
-            }
-        }
-        _ => return Err("this example does not support the decoded pixel format".into()),
+    // Prepare visibly different pixels; the common operation preserves alpha.
+    for mut pixel in raster.pixel_iter_mut() {
+        pixel.invert();
     }
 
     // Clone unknown metadata from the template while assigning fresh identities.
     let mut writer = clip.writer()?;
-    let layer_id = writer.clone_raster_layer_from_template(
+    let layer_id = writer.clone_raster_layer_from_template_image(
         template_layer_id,
         parent_layer_id,
         &args[5],
-        format,
-        pixels,
+        raster,
         limits,
     )?;
 

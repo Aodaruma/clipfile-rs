@@ -15,7 +15,7 @@ use crate::{
 
 use crate::raster::{OffscreenAttributes, replace_attribute_block_sizes};
 #[cfg(feature = "raster")]
-use crate::raster::{PixelFormat, RasterEncoder, RasterSource};
+use crate::raster::{PixelFormat, RasterEncoder, RasterImage, RasterSource};
 
 const ROOT_MAGIC: &[u8; 8] = b"CSFCHUNK";
 const FILE_HEADER_TAG: &[u8; 8] = b"CHNKHead";
@@ -608,10 +608,32 @@ impl<R: Read + Seek> ClipWriter<'_, R> {
 
     /// Replaces the complete render raster of an existing layer.
     ///
+    /// This semantic entry point preserves the image's pixel format and uses
+    /// the CLIP STUDIO PAINT-compatible checksum. Use
+    /// [`Self::replace_layer_raster_pixels`] only when raw row-major
+    /// interoperability or an explicit checksum mode is required.
+    #[cfg(feature = "raster")]
+    pub fn replace_layer_raster(
+        &mut self,
+        layer_id: i64,
+        image: RasterImage,
+    ) -> Result<RasterWriteSummary> {
+        let format = image.format();
+        self.replace_layer_raster_pixels(
+            layer_id,
+            format,
+            image.into_pixels(),
+            BlockChecksumMode::CspCompatible,
+        )
+    }
+
+    /// Replaces the complete render raster of an existing layer.
+    ///
     /// `pixels` must contain the existing raster dimensions in row-major
-    /// [`PixelFormat::Rgba8`] or [`PixelFormat::Gray8`] form. Only tiles whose
-    /// semantic pixels changed are re-encoded; padding outside the bitmap is
-    /// preserved. This method cannot add a missing external object.
+    /// [`PixelFormat::Rgba8`], [`PixelFormat::Gray8`], or
+    /// [`PixelFormat::GrayAlpha8`] form. Only tiles whose semantic pixels
+    /// changed are re-encoded; padding outside the bitmap is preserved. This
+    /// method cannot add a missing external object.
     #[cfg(feature = "raster")]
     pub fn replace_layer_raster_pixels(
         &mut self,
@@ -628,6 +650,25 @@ impl<R: Read + Seek> ClipWriter<'_, R> {
                 reason: format!("layer {layer_id} has no render raster"),
             })?;
         self.replace_raster_pixels(layer_id, source, format, pixels.as_ref(), checksum_mode)
+    }
+
+    /// Replaces the complete mask raster of an existing layer.
+    ///
+    /// This semantic entry point uses the image's format and the compatible
+    /// checksum automatically.
+    #[cfg(feature = "raster")]
+    pub fn replace_layer_mask(
+        &mut self,
+        layer_id: i64,
+        image: RasterImage,
+    ) -> Result<RasterWriteSummary> {
+        let format = image.format();
+        self.replace_layer_mask_pixels(
+            layer_id,
+            format,
+            image.into_pixels(),
+            BlockChecksumMode::CspCompatible,
+        )
     }
 
     /// Replaces the complete mask raster of an existing layer.

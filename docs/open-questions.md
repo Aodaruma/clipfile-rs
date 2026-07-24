@@ -39,7 +39,7 @@
 
 - 状態: 補正レイヤーparameter、特殊定規metadata、2Dカメラは解明・実装済み、その他は部分的
 - 観測: `LayerType` は複数の数値を取り、サンプル間でスキーマ列にも差がある。匿名のベクターレイヤーでは `LayerType=0`、`VectorObjectList` 1行、40-byteの外部ID、268-byteの未分類外部本体を確認した。同レイヤーの描画Mipmapだけでは実際の線を復元できない例だった。匿名の単一テキストでは `LayerType=0`、`TextLayerType=0`、UTF-8本文BLOB、1,029-byteの属性BLOB、属性version 1を確認し、primary以外の文字列・属性配列はNULLだった。公開サンプルの補正レイヤー32件は `LayerType=4098` で、`FilterLayerInfo` kind 1～9をすべて末尾まで復号できた。定規サンプル18レイヤーではベクター定規参照8件と特殊manager 10件があり、9定規表の16定規と透視消失点chainを全件到達できた。
-- 現在の扱い: レイヤー種別の元の整数値を保持し、ベクターは外部本体まで上限付きで取得する。テキストはUTF-8本文とオブジェクト別属性の境界に加え、属性parameter envelopeとobject IDを検証し、安全なtemplate cloneでobjectを追加し、1 objectを残す範囲で削除できる。各style/layout属性の意味は不透明なバイト列として保持する。補正レイヤーは `Database::correction_layer` から9種の型付きparameterと元payloadを返し、未知kindはpayloadを保持する。定規は `Database::ruler_layer` で所有関係・chain・curve点・guide長、2Dカメラは `Database::camera_2d_layer` でsnapshot構造を検証する。
+- 現在の扱い: レイヤー種別の元の整数値を保持し、ベクターは外部本体まで上限付きで取得する。テキストはUTF-8本文とオブジェクト別属性の境界に加え、属性parameter envelopeとobject IDを検証し、安全なtemplate cloneでobjectを追加し、1 objectを残す範囲で削除できる。各style/layout属性の意味は不透明なバイト列として保持する。補正レイヤーは `Database::correction_layers` でSQLなしに所有layerを列挙し、9種の型付きparameterと元payloadを返す。未知kindはpayloadを保持する。定規は `Database::ruler_layers` でSQLなしに所有layerを列挙でき、`ruler_layer` と共通の所有関係・chain・curve点・guide長検証を行う。2Dカメラは `Database::camera_2d_layer` でsnapshot構造を検証する。
 - 次の調査: ベクター本体の線・制御点・ブラシ属性と、テキストのフォント・段落・変形属性を差分比較する。3Dも1種類ずつ含む最小コーパスを作成する。定規はcurve header 4語と透視guide BLOBの意味を差分比較する。
 
 ## テキスト属性のゼロ生成と座標
@@ -60,11 +60,12 @@
 
 ## 1-bitラスターデータ
 
-- 状態: 8-bitの1チャンネルは実ファイル確認済み、1-bitは未確認
+- 状態: 8-bitの1/2/5チャンネルは実ファイル確認済み、1-bitはmetadata確認・pixel展開未確認
 - 観測: 匿名の白マスクと部分マスクを `Gray8` として復号し、部分マスクの1タイルが `1 × 256 × 256 = 65,536` バイトであることを確認。
 - 追加観測: ラスターレイヤーの表現色をモノクロへ変更して保存しても、描画本体は従来どおり5チャンネル・各チャンネル8-bit、展開長327,680バイトだった。表現色だけでは1-bit格納にならない。
-- 現在の扱い: 8-bitの1チャンネル配置は対応済み。`PixelPacking` が1-bitまたはmonochromeを示す場合は推測展開せず `UnsupportedRaster` を返す。
-- 次の調査: 外部画像の読み込みなど別経路で1-bit格納を生成し、ビット順序、行パディング、既定色を比較する。
+- corpus集計: 匿名ローカル133ファイル・58,487 `Offscreen` 行のうち、1-bit packed monochrome metadataは45行、8-bit gray+alphaは177行だった。16/32-bit/channelは観測されなかった。
+- 現在の扱い: 8-bitの1チャンネルと独立alphaを持つ2チャンネルは対応済み。`PixelPacking` が1-bitまたはmonochromeを示す場合は推測展開せず `UnsupportedRaster` を返す。
+- 次の調査: 確認済み45行のpayloadからbit順序、行パディング、alpha/value plane、既定色を比較する。
 
 ## `.cmc`
 
